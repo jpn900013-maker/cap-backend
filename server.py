@@ -188,7 +188,7 @@ def create_jwt(user):
 
 # ========== API ENDPOINTS ==========
 
-@app.route('/')
+@app.route('/captcha/api/')
 def status():
     return """
     <!DOCTYPE html>
@@ -275,7 +275,7 @@ def status():
     </html>
     """
 
-@app.route('/api/login', methods=['POST'])
+@app.route('/captcha/api/login', methods=['POST'])
 @csrf.exempt
 @limiter.limit("10 per minute")
 def api_login():
@@ -291,7 +291,7 @@ def api_login():
     db.users.update_one({'_id': user['_id']}, {'$set': {'last_login': time.time()}})
     return jsonify({'status': 'success', 'token': create_jwt(user), 'user': {'username': user['username'], 'api_key': user['api_key'], 'is_admin': int(user.get('is_admin', 0))}})
 
-@app.route('/api/register', methods=['POST'])
+@app.route('/captcha/api/register', methods=['POST'])
 @csrf.exempt
 @limiter.limit("5 per minute")
 def api_register():
@@ -311,7 +311,7 @@ def api_register():
     user = db.users.find_one({'_id': result.inserted_id})
     return jsonify({'status': 'success', 'token': create_jwt(user), 'user': {'username': user['username'], 'api_key': user['api_key'], 'is_admin': is_admin}})
 
-@app.route('/api/session', methods=['GET'])
+@app.route('/captcha/api/session', methods=['GET'])
 @jwt_required
 @csrf.exempt
 def api_session():
@@ -322,7 +322,7 @@ def api_session():
     balance_doc = db.balance.find_one({'user_id': user['_id']})
     return jsonify({'status': 'success', 'user': {'username': user['username'], 'api_key': user['api_key'], 'is_admin': int(user.get('is_admin', 0)), 'balance': balance_doc['amount'] if balance_doc else 0.0}})
 
-@app.route('/api/reset_key', methods=['POST'])
+@app.route('/captcha/api/reset_key', methods=['POST'])
 @jwt_required
 @csrf.exempt
 def api_reset_key():
@@ -388,7 +388,7 @@ class Solver:
         if task['api_key'] != self.api_key: return "unauthorized", None
         return task['status'], task.get('solution') if task['status'] == 'solved' else task.get('error')
 
-@app.route('/create_task', methods=['POST'])
+@app.route('/captcha/api/create_task', methods=['POST'])
 @csrf.exempt
 def create_task():
     data = request.json
@@ -398,7 +398,7 @@ def create_task():
     if not success: return jsonify({"status": "error", "message": result}), 500
     return jsonify({"status": "success", "task_id": result})
 
-@app.route('/get_result/<task_id>', methods=['GET', 'POST'])
+@app.route('/captcha/api/get_result/<task_id>', methods=['GET', 'POST'])
 @csrf.exempt
 def get_result(task_id):
     # Support key in query params or JSON body
@@ -423,7 +423,7 @@ def get_result(task_id):
     
     return jsonify({"status": status, "solution": result} if status == 'solved' else {"status": status, "error": result})
 
-@app.route('/api/hcaptcha')
+@app.route('/captcha/api/hcaptcha')
 def api_hcaptcha():
     # Rapid-fire legacy API support
     api_key = request.args.get('api_key')
@@ -433,7 +433,7 @@ def api_hcaptcha():
     return jsonify({'task_id': res, 'status': 'processing'}) if success else jsonify({'error': res}), 500
 # ========== ADMIN API ENDPOINTS ==========
 
-@app.route('/api/admin/overview', methods=['GET'])
+@app.route('/captcha/api/admin/overview', methods=['GET'])
 @admin_required
 @csrf.exempt
 def admin_overview():
@@ -468,7 +468,7 @@ def admin_overview():
         'recent_transactions': recent_transactions
     })
 
-@app.route('/api/admin/users', methods=['GET'])
+@app.route('/captcha/api/admin/users', methods=['GET'])
 @admin_required
 @csrf.exempt
 def admin_get_users():
@@ -492,7 +492,7 @@ def admin_get_users():
     
     return jsonify({'status': 'success', 'users': formatted_users})
 
-@app.route('/api/admin/users/balance', methods=['POST'])
+@app.route('/captcha/api/admin/users/balance', methods=['POST'])
 @admin_required
 @csrf.exempt
 def admin_manage_balance():
@@ -529,7 +529,7 @@ def admin_manage_balance():
     
     return jsonify({'status': 'success', 'message': f'Balance for {user["username"]} updated'})
 
-@app.route('/api/admin/settings', methods=['GET', 'POST'])
+@app.route('/captcha/api/admin/settings', methods=['GET', 'POST'])
 @admin_required
 @csrf.exempt
 def admin_manage_settings():
@@ -548,7 +548,7 @@ def admin_manage_settings():
 
 # ========== DASHBOARD HELPER APIS ==========
 
-@app.route('/api/usage', methods=['GET'])
+@app.route('/captcha/api/usage', methods=['GET'])
 @jwt_required
 @csrf.exempt
 def get_usage():
@@ -575,7 +575,7 @@ def get_usage():
         'success_rate': success_rate
     })
 
-@app.route('/api/tasks/history', methods=['POST'])
+@app.route('/captcha/api/tasks/history', methods=['POST'])
 @jwt_required
 @csrf.exempt
 def get_task_history():
@@ -615,7 +615,7 @@ def get_task_history():
 
 # ========== PAYMENT API ENDPOINTS ==========
 
-@app.route('/api/payments/create', methods=['POST'])
+@app.route('/captcha/api/payments/create', methods=['POST'])
 @jwt_required
 @csrf.exempt
 def create_payment():
@@ -650,7 +650,7 @@ def create_payment():
         'amount_crypto': amount / (65000 if currency == 'BTC' else (80 if currency == 'LTC' else 1))
     })
 
-@app.route('/api/payments/status/<payment_id>', methods=['GET'])
+@app.route('/captcha/api/payments/status/<payment_id>', methods=['GET'])
 @jwt_required
 @csrf.exempt
 def payment_status(payment_id):
