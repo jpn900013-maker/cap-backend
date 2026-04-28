@@ -16,9 +16,22 @@ from pymongo import MongoClient
 from bson.objectid import ObjectId
 import math
 from datetime import datetime
-
 import logging
+
+# Initialize logging
 log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
+
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+import bleach
+
+app = Flask(__name__)
+
+# Enable CORS for frontend to communicate with backend
+CORS(app, resources={r'/*': {'origins': '*'}}, supports_credentials=True)
+
+# JWT secret for token-based auth
 JWT_SECRET = os.environ.get('JWT_SECRET', secrets.token_hex(32))
 JWT_EXPIRY = 86400 * 7  # 7 days
 
@@ -35,8 +48,8 @@ app.config.update(
 limiter = Limiter(
     get_remote_address,
     app=app,
-    default_limits=["1000 per day", "200 per hour"],
-    storage_uri="memory://"
+    default_limits=['1000 per day', '200 per hour'],
+    storage_uri='memory://'
 )
 
 # Initialize CSRF protection
@@ -49,52 +62,6 @@ def timestamp_to_date(timestamp):
     if not timestamp:
         return ""
     return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(timestamp))
-
-from dotenv import load_dotenv
-
-# Load `.env` into environment variables
-load_dotenv()
-
-# MongoDB setup
-MONGO_URI = os.environ.get('MONGO_URI')
-if not MONGO_URI:
-    log.error("CRITICAL: MONGO_URI environment variable is missing!")
-DB_NAME = 'minex_license'
-
-# Get MongoDB connection using Flask's application context
-def get_db():
-    """
-    Returns MongoDB database connection from the Flask g object.
-    Creates a new connection if none exists.
-    """
-    if 'mongo_client' not in g:
-        try:
-            g.mongo_client = MongoClient(
-                MONGO_URI,
-                serverSelectionTimeoutMS=5000,  # 5 second timeout for server selection
-                connectTimeoutMS=10000,         # 10 second timeout for initial connection
-                socketTimeoutMS=45000,          # 45 second timeout for operations
-                maxPoolSize=50,                 # Maximum connection pool size
-                retryWrites=True                # Retry write operations
-            )
-            # Test connection
-            g.mongo_client.server_info()
-            # print(f"Connected to MongoDB at {MONGO_URI}")
-        except Exception as e:
-            print(f"Error connecting to MongoDB: {e}")
-            print("Falling back to alternative methods or exiting")
-            raise
-    
-    # Always return a fresh reference to the database
-    return g.mongo_client[DB_NAME]
-
-# Close MongoDB connection when the application context ends
-@app.teardown_appcontext
-def close_mongo_connection(error):
-    """Close MongoDB connection when the application context ends."""
-    mongo_client = g.pop('mongo_client', None)
-    if mongo_client is not None:
-        mongo_client.close()
         # print("MongoDB connection closed")
 
 def init_db():
@@ -1387,14 +1354,17 @@ class Solver:
         """
         try:
             # Create a new database connection for this thread
-            client = MongoClient(MONGO_URI,
+            g.mongo_client = MongoClient(
+                MONGO_URI,
                 serverSelectionTimeoutMS=5000,
                 connectTimeoutMS=10000,
                 socketTimeoutMS=45000,
                 maxPoolSize=50,
-                retryWrites=True
+                retryWrites=True,
+                tlsAllowInvalidCertificates=True  # Ensure this is explicitly set
             )
-            db = client[DB_NAME]
+            # Connection will be established on first command
+            db = g.mongo_client[DB_NAME]
             
             # Create and solve captcha using the solver
             captcha = hcaptcha(sitekey, siteurl, proxy, rqdata)
