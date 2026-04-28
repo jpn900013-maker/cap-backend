@@ -36,13 +36,22 @@ session.headers = {
 }
 
 class hcaptcha:
-    def __init__(self, sitekey: str, host: str, proxy: str = None, rqdata: str = None) -> None:
+    def __init__(self, sitekey: str, host: str, proxy: str = None, rqdata: str = None, useragent: str = None) -> None:
         logger.info(f"Solving for: {sitekey} - {host}")
         self.sitekey = sitekey
         self.host = host.split("//")[-1].split("/")[0]
 
         self.rqdata = rqdata
-        self.motion = motion_data(session.headers["user-agent"], f"https://{host}")
+        
+        # Override user-agent if provided by the client, otherwise use default
+        ua = useragent if useragent else session.headers["user-agent"]
+        self.motion = motion_data(ua, f"https://{host}")
+        
+        # If custom user agent provided, update it for the session header for this solve
+        current_headers = session.headers.copy()
+        if useragent:
+            current_headers['user-agent'] = useragent
+        self.session_headers = current_headers
 
         self.motiondata = self.motion.get_captcha()
         self.siteconfig = self.get_siteconfig()
@@ -62,7 +71,7 @@ class hcaptcha:
             'sc': '1', 
             'swa': '1', 
             'spst': '1'
-        })
+        }, headers=self.session_headers)
         return siteconfig.json()
 
 
@@ -82,7 +91,7 @@ class hcaptcha:
 
         if self.rqdata is not None: data['rqdata'] = self.rqdata
 
-        getcaptcha = session.post(f"https://api.hcaptcha.com/getcaptcha/{self.sitekey}", data=data)
+        getcaptcha = session.post(f"https://api.hcaptcha.com/getcaptcha/{self.sitekey}", data=data, headers=self.session_headers)
         return getcaptcha.json()
     
     def get_captcha2(self) -> dict:
@@ -104,7 +113,7 @@ class hcaptcha:
         }
         if self.rqdata is not None: data['rqdata'] = self.rqdata
 
-        getcaptcha2 = session.post(f"https://api.hcaptcha.com/getcaptcha/{self.sitekey}", data=data)
+        getcaptcha2 = session.post(f"https://api.hcaptcha.com/getcaptcha/{self.sitekey}", data=data, headers=self.session_headers)
         return getcaptcha2.json()
 
     def text(self, task: dict) -> str:
@@ -169,7 +178,7 @@ class hcaptcha:
                     'serverdomain': self.host,
                     'sitekey': self.sitekey,
                     'v': version,
-                })
+                }, headers=self.session_headers)
             if 'UUID' in submit.text:
                 logger.info(f"Solved hCaptcha {submit.json()['generated_pass_UUID'][:150]}..")
                 return submit.json()['generated_pass_UUID']

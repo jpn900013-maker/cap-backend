@@ -353,7 +353,7 @@ class Solver:
     def __init__(self, api_key):
         self.api_key = api_key
     
-    def create_task(self, task_type, sitekey, siteurl, proxy=None, rqdata=None):
+    def create_task(self, task_type, sitekey, siteurl, proxy=None, rqdata=None, useragent=None):
         db = get_db()
         valid, msg = validate_api_key(self.api_key)
         if not valid: return False, msg
@@ -364,15 +364,15 @@ class Solver:
         db.balance.update_one({'user_id': user['_id']}, {'$inc': {'amount': -cost}, '$set': {'last_updated': time.time()}})
         db.transactions.insert_one({'user_id': user['_id'], 'amount': -cost, 'type': 'debit', 'description': f'Task: {task_type}', 'created_at': time.time()})
         task_id = str(uuid.uuid4())
-        db.tasks.insert_one({'task_id': task_id, 'api_key': self.api_key, 'task_type': task_type, 'sitekey': sitekey, 'siteurl': siteurl, 'proxy': proxy, 'rqdata': rqdata, 'status': 'solving', 'created_at': time.time()})
-        threading.Thread(target=self._task_solver, args=(task_id, task_type, sitekey, siteurl, proxy, rqdata)).start()
+        db.tasks.insert_one({'task_id': task_id, 'api_key': self.api_key, 'task_type': task_type, 'sitekey': sitekey, 'siteurl': siteurl, 'proxy': proxy, 'rqdata': rqdata, 'useragent': useragent, 'status': 'solving', 'created_at': time.time()})
+        threading.Thread(target=self._task_solver, args=(task_id, task_type, sitekey, siteurl, proxy, rqdata, useragent)).start()
         return True, task_id
 
-    def _task_solver(self, task_id, task_type, sitekey, siteurl, proxy, rqdata):
+    def _task_solver(self, task_id, task_type, sitekey, siteurl, proxy, rqdata, useragent):
         with app.app_context():
             db = get_db()
             try:
-                captcha = hcaptcha(sitekey, siteurl, proxy, rqdata)
+                captcha = hcaptcha(sitekey, siteurl, proxy, rqdata, useragent)
                 result = captcha.solve()
                 status = 'solved' if result else 'error'
                 update = {'status': status, 'completed_at': time.time()}
@@ -396,7 +396,7 @@ def create_task():
     data = request.json
     if not data or not data.get('key'): return jsonify({"status": "error", "message": "API key required"}), 400
     solver = Solver(data['key'])
-    success, result = solver.create_task(data.get('type', 'hcaptcha_basic'), data.get('data', {}).get('sitekey'), data.get('data', {}).get('siteurl', 'discord.com'), data.get('data', {}).get('proxy'), data.get('data', {}).get('rqdata'))
+    success, result = solver.create_task(data.get('type', 'hcaptcha_basic'), data.get('data', {}).get('sitekey'), data.get('data', {}).get('siteurl', 'discord.com'), data.get('data', {}).get('proxy'), data.get('data', {}).get('rqdata'), data.get('data', {}).get('useragent'))
     if not success: return jsonify({"status": "error", "message": result}), 500
     return jsonify({"status": "success", "task_id": result})
 
