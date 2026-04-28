@@ -541,12 +541,16 @@ def get_usage():
     user = db.users.find_one({'_id': safe_object_id(request.jwt_user_id)})
     if not user: return jsonify({'status': 'error'}), 404
     
-    daily_count = db.api_usage.count_documents({
+    # Count usage based on tasks collection for better reliability
+    daily_count = db.tasks.count_documents({
         'api_key': user['api_key'],
-        'timestamp': {'$gt': time.time() - 86400}
+        'created_at': {'$gt': time.time() - 86400}
     })
     
-    total_solves = db.tasks.count_documents({'api_key': user['api_key'], 'status': 'solved'})
+    total_solves = db.tasks.count_documents({
+        'api_key': user['api_key'], 
+        'status': {'$regex': '^solved$', '$options': 'i'}
+    })
     total_tasks = db.tasks.count_documents({'api_key': user['api_key']})
     success_rate = (total_solves / total_tasks * 100) if total_tasks > 0 else 0
     
