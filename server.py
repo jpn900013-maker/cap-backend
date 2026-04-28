@@ -398,10 +398,11 @@ def create_task():
     if not success: return jsonify({"status": "error", "message": result}), 500
     return jsonify({"status": "success", "task_id": result})
 
-@app.route('/get_result/<task_id>', methods=['GET'])
+@app.route('/get_result/<task_id>', methods=['GET', 'POST'])
 @csrf.exempt
 def get_result(task_id):
-    api_key = request.args.get('key')
+    # Support key in query params or JSON body
+    api_key = request.args.get('key') or (request.json.get('key') if request.is_json else None)
     if not api_key: return jsonify({"status": "error", "message": "API key required"}), 400
     solver = Solver(api_key)
     status, result = solver.get_task_solution(task_id)
