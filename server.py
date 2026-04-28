@@ -62,7 +62,47 @@ def timestamp_to_date(timestamp):
     if not timestamp:
         return ""
     return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(timestamp))
-        # print("MongoDB connection closed")
+from dotenv import load_dotenv
+
+# Load `.env` into environment variables
+load_dotenv()
+
+# MongoDB setup
+MONGO_URI = os.environ.get('MONGO_URI')
+if not MONGO_URI:
+    log.error('CRITICAL: MONGO_URI environment variable is missing!')
+DB_NAME = 'minex_license'
+
+# Get MongoDB connection using Flask's application context
+def get_db():
+    """
+    Returns MongoDB database connection from the Flask g object.
+    Creates a new connection if none exists.
+    """
+    if 'mongo_client' not in g:
+        try:
+            g.mongo_client = MongoClient(
+                MONGO_URI,
+                serverSelectionTimeoutMS=5000,
+                connectTimeoutMS=10000,
+                socketTimeoutMS=45000,
+                maxPoolSize=50,
+                retryWrites=True,
+                tlsAllowInvalidCertificates=True
+            )
+        except Exception as e:
+            print(f'Error connecting to MongoDB: {e}')
+            raise
+    
+    return g.mongo_client[DB_NAME]
+
+# Close MongoDB connection when the application context ends
+@app.teardown_appcontext
+def close_mongo_connection(error):
+    """Close MongoDB connection when the application context ends."""
+    mongo_client = g.pop('mongo_client', None)
+    if mongo_client is not None:
+        mongo_client.close()
 
 def init_db():
     """Initialize database collections and indexes."""
