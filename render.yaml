@@ -1,9 +1,9 @@
 services:
   - type: web
     name: 9captcha-api
-    runtime: docker
-    dockerfilePath: ./Dockerfile
-    dockerContext: .
+    env: python
+    buildCommand: pip install -r requirements.txt && playwright install chromium && playwright install-deps
+    startCommand: gunicorn server:app --workers 2 --timeout 120
     envVars:
       - key: MONGO_URI
         sync: false

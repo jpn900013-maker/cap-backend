@@ -1,9 +1,0 @@
-__pycache__
-*.pyc
-*.pyo
-.git
-.env
-.gitignore
-*.md
-examples/
-scripts/
