@@ -190,7 +190,90 @@ def create_jwt(user):
 
 @app.route('/')
 def status():
-    return jsonify({'status': 'operational', 'service': '9Captcha API', 'version': '1.0.0'})
+    return """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>9Captcha API | Operational</title>
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=Outfit:wght@500;700&display=swap" rel="stylesheet">
+        <style>
+            :root {
+                --bg: #09090b;
+                --zinc-800: #27272a;
+                --zinc-400: #a1a1aa;
+                --violet: #8b5cf6;
+                --success: #10b981;
+            }
+            body {
+                background: var(--bg);
+                color: white;
+                font-family: 'Inter', sans-serif;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                height: 100vh;
+                margin: 0;
+                overflow: hidden;
+            }
+            .container {
+                text-align: center;
+                background: rgba(39, 39, 42, 0.5);
+                backdrop-filter: blur(12px);
+                padding: 3rem;
+                border-radius: 24px;
+                border: 1px solid var(--zinc-800);
+                box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+                max-width: 400px;
+                width: 90%;
+                position: relative;
+            }
+            .pulse {
+                width: 12px;
+                height: 12px;
+                background: var(--success);
+                border-radius: 50%;
+                display: inline-block;
+                margin-right: 8px;
+                box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+                animation: pulse 2s infinite;
+            }
+            @keyframes pulse {
+                0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+                70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
+                100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+            }
+            h1 {
+                font-family: 'Outfit', sans-serif;
+                font-size: 2rem;
+                margin: 1rem 0;
+                background: linear-gradient(135deg, #fff 0%, var(--zinc-400) 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+            }
+            p { color: var(--zinc-400); font-size: 0.9rem; margin-bottom: 2rem; }
+            .badge {
+                background: rgba(139, 92, 246, 0.1);
+                color: var(--violet);
+                padding: 6px 12px;
+                border-radius: 99px;
+                font-size: 0.75rem;
+                font-weight: 600;
+                border: 1px solid rgba(139, 92, 246, 0.2);
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="badge">9CAPTCHA CORE</div>
+            <h1>System Online</h1>
+            <p><span class="pulse"></span> 9Captcha API is fully operational</p>
+            <div style="font-size: 0.7rem; color: #3f3f46;">v1.0.0 &bull; Headless Engine</div>
+        </div>
+    </body>
+    </html>
+    """
 
 @app.route('/api/login', methods=['POST'])
 @csrf.exempt
