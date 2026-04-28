@@ -280,11 +280,7 @@ def admin_required(f):
 
 @app.route('/')
 def index():
-    return render_template('index.html')
-
-@app.route('/implement')
-def implement():
-    return render_template('implement.html')
+    return jsonify({'error': 'use frontend'})
 
 # ========== JWT API ENDPOINTS (for static frontend) ==========
 
@@ -430,256 +426,10 @@ def api_session():
 
 # ========== END JWT API ENDPOINTS ==========
 
-@app.route('/login', methods=['GET', 'POST'])
-@limiter.limit("10 per minute")
-def login():
-    if request.method == 'POST':
-        db = get_db()
-        raw_username = request.form.get('username')
-        username = bleach.clean(raw_username) if raw_username else None
-        password = request.form.get('password')
-        
-        if not username or not password:
-            return render_template('login.html', error_message='Username and password are required')
-        
-        user = db.users.find_one({'username': username})
-        
-        if not user or not bcrypt.checkpw(password.encode('utf-8'), user['password'].encode('utf-8')):
-            return render_template('login.html', error_message='Invalid username or password')
-        
-        # Update last login time
-        db.users.update_one(
-            {'_id': user['_id']},
-            {'$set': {'last_login': time.time()}}
-        )
-        
-        # Store user ID as string in session
-        session['user_id'] = str(user['_id'])
-        session['username'] = username
-        
-        # Explicitly cast is_admin to int for consistent behavior
-        is_admin_value = int(bool(user.get('is_admin', 0)))
-        session['is_admin'] = is_admin_value
-        
-        return redirect(url_for('dashboard'))
-    
-    return render_template('login.html')
-    
-@app.route('/register', methods=['GET', 'POST'])
-@limiter.limit("5 per minute")
-def register():
-    if request.method == 'POST':
-        db = get_db()
-        raw_username = request.form.get('username')
-        username = bleach.clean(raw_username) if raw_username else None
-        password = request.form.get('password')
-        confirm_password = request.form.get('confirm_password')
-        
-        # Validate input
-        if not username or not password or not confirm_password:
-            return render_template('register.html', error_message='All fields are required')
-        
-        if password != confirm_password:
-            return render_template('register.html', error_message='Passwords do not match')
-        
-        # Check if username already exists
-        existing_user = db.users.find_one({'username': username})
-        
-        if existing_user:
-            return render_template('register.html', error_message='Username already exists')
-        
-        # Generate API key as UUID (GUID)
-        api_key = str(uuid.uuid4())
-        
-        # Hash password
-        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
-        
-        # Set admin status if username is 'admin' - ensure it's an integer
-        is_admin = 1 if username.lower() == 'admin' else 0
-        
-        # Insert user into database
-        try:
-            result = db.users.insert_one({
-                'username': username,
-                'password': hashed_password.decode('utf-8'),
-                'api_key': api_key,
-                'created_at': time.time(),
-                'last_login': time.time(),
-                'is_admin': is_admin  # Explicitly an integer
-            })
-            
-            # Initialize balance for the user
-            db.balance.insert_one({
-                'user_id': result.inserted_id,
-                'amount': 0.0,
-                'last_updated': time.time()
-            })
-            
-            # Get the new user
-            new_user = db.users.find_one({'_id': result.inserted_id})
-            
-            # Store user ID as string in session
-            session['user_id'] = str(new_user['_id'])
-            session['username'] = username
-            session['is_admin'] = is_admin  # Use the same integer value
-            
-            return redirect(url_for('dashboard'))
-        except Exception as e:
-            return render_template('register.html', error_message=f'Registration failed: {str(e)}')
-    
-    return render_template('register.html')
-
 @app.route('/logout')
 def logout():
     session.clear()
     return redirect(url_for('index'))
-
-@app.route('/dashboard')
-@login_required
-def dashboard():
-    db = get_db()
-    
-    # Get user details safely
-    user_id = safe_object_id(session['user_id'])
-    if user_id is None:
-        # If user_id cannot be converted, clear session and redirect
-        session.clear()
-        return redirect(url_for('login'))
-    
-    user = db.users.find_one({'_id': user_id})
-    
-    # If user is not found, clear session and redirect to login
-    if not user:
-        session.clear()
-        return redirect(url_for('login'))
-    
-    # Refresh is_admin value in session with consistent type conversion
-    session['is_admin'] = int(bool(user.get('is_admin', 0)))
-    
-    # Get user balance
-    balance_result = db.balance.find_one({'user_id': user['_id']})
-    balance = balance_result['amount'] if balance_result else 0.0
-    
-    # Get recent transactions
-    transactions = list(db.transactions.find({'user_id': user['_id']}).sort('created_at', -1).limit(5))
-    
-    # Get recent tasks
-    tasks = list(db.tasks.find({'api_key': user['api_key']}).sort('created_at', -1).limit(5))
-    
-    return render_template(
-        'dashboard.html', 
-        username=user['username'], 
-        api_key=user['api_key'], 
-        is_admin=session['is_admin'],  # Use the session value for consistency
-        balance=balance,
-        transactions=transactions,
-        tasks=tasks
-    )
-
-@app.route('/admin')
-@admin_required
-def admin_dashboard():
-    try:
-        db = get_db()
-        
-        # Get all users
-        users = list(db.users.find(
-            {}, 
-            {'_id': 1, 'username': 1, 'created_at': 1, 'last_login': 1, 'is_admin': 1}
-        ).sort('created_at', -1))
-        
-        # Format users as lists for template
-        formatted_users = []
-        for user in users:
-            formatted_users.append([
-                str(user['_id']),
-                user['username'],
-                user.get('created_at', 0),
-                user.get('last_login', 0),
-                bool(user.get('is_admin', 0))
-            ])
-        
-        # Get and format system settings as a list of lists for the template
-        settings_data = db.settings.find({}, {'_id': 0, 'key': 1, 'value': 1})
-        formatted_settings = [[s['key'], s['value']] for s in settings_data]
-        
-        # Get recent transactions with user info
-        pipeline = [
-            {'$lookup': {
-                'from': 'users',
-                'localField': 'user_id',
-                'foreignField': '_id',
-                'as': 'user'
-            }},
-            {'$unwind': '$user'},
-            {'$sort': {'created_at': -1}},
-            {'$limit': 10},
-            {'$project': {
-                '_id': 1,
-                'username': '$user.username',
-                'amount': 1,
-                'type': 1,
-                'description': 1,
-                'created_at': 1
-            }}
-        ]
-        transactions_data = list(db.transactions.aggregate(pipeline))
-        
-        # Format transactions as lists for template
-        formatted_transactions = []
-        for transaction in transactions_data:
-            formatted_transactions.append([
-                str(transaction['_id']),
-                transaction['username'],
-                transaction['amount'],
-                transaction['type'],
-                transaction['description'],
-                transaction['created_at']
-            ])
-        
-        # Get recent tasks with user info
-        task_pipeline = [
-            {'$lookup': {
-                'from': 'users',
-                'localField': 'api_key',
-                'foreignField': 'api_key',
-                'as': 'user'
-            }},
-            {'$unwind': '$user'},
-            {'$sort': {'created_at': -1}},
-            {'$limit': 10},
-            {'$project': {
-                'task_id': 1,
-                'username': '$user.username',
-                'task_type': 1,
-                'status': 1,
-                'created_at': 1
-            }}
-        ]
-        tasks_data = list(db.tasks.aggregate(task_pipeline))
-        
-        # Format tasks as lists for template
-        formatted_tasks = []
-        for task in tasks_data:
-            formatted_tasks.append([
-                task['task_id'],
-                task['username'],
-                task['task_type'],
-                task['status'],
-                task['created_at']
-            ])
-        
-        return render_template(
-            'admin.html',
-            users=formatted_users,
-            settings=formatted_settings,
-            transactions=formatted_transactions,
-            tasks=formatted_tasks
-        )
-    except Exception as e:
-        print(f"Admin dashboard error: {e}")
-        flash(f"Error loading admin dashboard: {str(e)}", 'error')
-        return redirect(url_for('dashboard'))
 
 @app.route('/admin/users')
 @admin_required
@@ -732,7 +482,7 @@ def users_management():
     except Exception as e:
         print(f"Error in users management: {e}")
         flash(f"An error occurred: {str(e)}", "danger")
-        return render_template('admin/users.html', users=[], page=1, total_pages=1)
+        return jsonify({'status': 'error', 'message': 'Legacy route removed'})
 
 @app.route('/admin/user/<user_id>', methods=['GET', 'POST'])
 @admin_required
@@ -892,7 +642,7 @@ def admin_settings():
     for setting in db.settings.find():
         settings[setting['key']] = setting['value']
     
-    return render_template('admin_settings.html', settings=settings)
+    return jsonify({'status': 'error', 'message': 'Legacy route removed'})
 
 # Dashboard API endpoints
 @app.route('/get_user_info', methods=['POST'])
@@ -1887,57 +1637,3 @@ def process_hcaptcha_task(task_id, num_tasks):
             pass  # If we can't even update the error status, just log and continue
 
 # Add a compatibility route for admin_users to maintain backward compatibility with templates
-@app.route('/admin_users')
-@admin_required
-def admin_users():
-    """
-    This route maintains backward compatibility with templates that use admin_users.
-    Implements the same functionality as users_management but formats data for the admin_users.html template.
-    """
-    try:
-        db = get_db()
-        # Get all users with pagination
-        page = request.args.get('page', 1, type=int)
-        per_page = 20
-        skip = (page - 1) * per_page
-        
-        # Get all users
-        users_data = list(db.users.find({}, {
-            '_id': 1, 
-            'username': 1, 
-            'created_at': 1, 
-            'last_login': 1, 
-            'is_admin': 1
-        }).sort('created_at', -1))
-        
-        # Format the data to match the template expectations
-        formatted_users = []
-        for user in users_data:
-            # Get balance
-            balance_doc = db.balance.find_one({'user_id': user['_id']})
-            balance = balance_doc['amount'] if balance_doc else 0.0
-            
-            # Format as list to match template expectations
-            formatted_users.append([
-                str(user['_id']),              # User ID
-                user['username'],              # Username
-                user.get('created_at', 0),     # Created timestamp
-                user.get('last_login', 0),     # Last login timestamp
-                bool(user.get('is_admin', 0)), # Admin status
-                balance                       # Balance
-            ])
-        
-        return render_template('admin_users.html', 
-                               users=formatted_users,
-                               page=page,
-                               total_pages=math.ceil(len(formatted_users) / per_page))
-    except Exception as e:
-        print(f"Error in admin_users: {e}")
-        flash(f"An error occurred: {str(e)}", "danger")
-        return render_template('admin_users.html', users=[], page=1, total_pages=1)
-
-if __name__ == '__main__':
-    # Enable debug mode only in development environments
-    debug_mode = os.environ.get('FLASK_ENV') == 'development'
-    app.run(host='0.0.0.0', port=5000, debug=debug_mode)
-        
