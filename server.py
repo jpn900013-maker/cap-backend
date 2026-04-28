@@ -23,7 +23,7 @@ from flask_limiter.util import get_remote_address
 import bleach
 
 # Load environment variables
-load_dotenv()
+load_dotenv('config.env')
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO)

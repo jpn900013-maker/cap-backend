@@ -16,7 +16,7 @@ api_js = session.get('https://hcaptcha.com/1/api.js?render=explicit&onload=hcapt
 version = re.findall(r'v1\/([A-Za-z0-9]+)\/static', api_js)[1]
 import os
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv('config.env')
 
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
