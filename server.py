@@ -212,21 +212,6 @@ with app.app_context():
     migrate_numeric_ids()
     ensure_user_balances()
 
-def login_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if 'user_id' not in session:
-            return redirect(url_for('login', next=request.url))
-        
-        # Validate that the user_id in session is valid
-        user_id = safe_object_id(session['user_id'])
-        if user_id is None:
-            session.clear()
-            return redirect(url_for('login', next=request.url))
-            
-        return f(*args, **kwargs)
-    return decorated_function
-
 # Utility functions
 def safe_object_id(id_str):
     """Safely convert a string to ObjectId, returning None if invalid."""
@@ -235,52 +220,12 @@ def safe_object_id(id_str):
     except:
         return None
 
-def admin_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        # First check if user is logged in
-        if 'user_id' not in session:
-            return redirect(url_for('login', next=request.url))
-        
-        # Get the user from the database directly
-        try:
-            db = get_db()
-            user_id = safe_object_id(session['user_id'])
-            
-            if not user_id:
-                flash('Invalid user ID', 'error')
-                return redirect(url_for('dashboard'))
-                
-            user = db.users.find_one({'_id': user_id})
-            
-            if not user:
-                flash('User not found', 'error')
-                return redirect(url_for('dashboard'))
-                
-            # Ensure the is_admin is stored as integer 1 for admins, 0 for non-admins
-            is_admin_value = int(user.get('is_admin', 0))
-            
-            # Update session value for consistency
-            session['is_admin'] = is_admin_value
-            
-            # Check if is_admin is 1
-            if is_admin_value != 1:
-                flash('Admin access required', 'error')
-                return redirect(url_for('dashboard'))
-                
-            # If we get here, user is admin
-            return f(*args, **kwargs)
-            
-        except Exception as e:
-            print(f"Admin check error: {e}")
-            flash('Error checking admin status', 'error')
-            return redirect(url_for('dashboard'))
-    
-    return decorated_function
-
 @app.route('/')
 def index():
-    return jsonify({'error': 'use frontend'})
+    return jsonify({'status': 'operational', 'api': '9Captcha Headless API', 'version': '1.0.0'})
+
+def index():
+    return render_template('index.html')
 
 # ========== JWT API ENDPOINTS (for static frontend) ==========
 
@@ -426,149 +371,104 @@ def api_session():
 
 # ========== END JWT API ENDPOINTS ==========
 
-@app.route('/logout')
-def logout():
-    session.clear()
-    return redirect(url_for('index'))
-
-@app.route('/admin/users')
-@admin_required
-def users_management():
-    try:
+@app.route('/login', methods=['GET', 'POST'])
+@limiter.limit("10 per minute")
+def login():
+    if request.method == 'POST':
         db = get_db()
-        # Get all users with pagination
-        page = request.args.get('page', 1, type=int)
-        per_page = 20
-        skip = (page - 1) * per_page
+        raw_username = request.form.get('username')
+        username = bleach.clean(raw_username) if raw_username else None
+        password = request.form.get('password')
         
-        # Use aggregation for more efficient user data retrieval with projection
-        users_pipeline = [
-            {"$sort": {"created_at": -1}},
-            {"$skip": skip},
-            {"$limit": per_page},
-            {"$project": {
-                "_id": 1,
-                "username": 1,
-                "email": 1,
-                "created_at": 1,
-                "is_admin": {"$ifNull": ["$is_admin", False]},
-                "is_active": {"$ifNull": ["$is_active", True]},
-                "api_key": 1
-            }}
-        ]
+        if not username or not password:
+            return render_template('login.html', error_message='Username and password are required')
         
-        users = list(db.users.aggregate(users_pipeline))
+        user = db.users.find_one({'username': username})
         
-        # Get total count for pagination
-        total_users = db.users.count_documents({})
-        total_pages = math.ceil(total_users / per_page)
+        if not user or not bcrypt.checkpw(password.encode('utf-8'), user['password'].encode('utf-8')):
+            return render_template('login.html', error_message='Invalid username or password')
         
-        # Get balance for each user and add to user object
-        for user in users:
-            balance = db.balance.find_one({"user_id": user["_id"]})
-            user["balance"] = balance.get("amount", 0) if balance else 0
-            
-            # Convert ObjectId to string for JSON serialization
-            user["_id"] = str(user["_id"])
-            
-            # Format timestamps
-            if "created_at" in user:
-                user["created_at_formatted"] = datetime.fromtimestamp(user["created_at"]).strftime("%Y-%m-%d %H:%M:%S")
+        # Update last login time
+        db.users.update_one(
+            {'_id': user['_id']},
+            {'$set': {'last_login': time.time()}}
+        )
         
-        return render_template('admin/users.html', 
-                              users=users, 
-                              page=page, 
-                              total_pages=total_pages)
-    except Exception as e:
-        print(f"Error in users management: {e}")
-        flash(f"An error occurred: {str(e)}", "danger")
-        return jsonify({'status': 'error', 'message': 'Legacy route removed'})
-
-@app.route('/admin/user/<user_id>', methods=['GET', 'POST'])
-@admin_required
-def user_details(user_id):
-    try:
+        # Store user ID as string in session
+        session['user_id'] = str(user['_id'])
+        session['username'] = username
+        
+        # Explicitly cast is_admin to int for consistent behavior
+        is_admin_value = int(bool(user.get('is_admin', 0)))
+        session['is_admin'] = is_admin_value
+        
+        return redirect(url_for('dashboard'))
+    
+    return render_template('login.html')
+    
+@app.route('/register', methods=['GET', 'POST'])
+@limiter.limit("5 per minute")
+def register():
+    if request.method == 'POST':
         db = get_db()
-        # Convert string user_id to ObjectId
-        user_id_obj = safe_object_id(user_id)
-        if not user_id_obj:
-            flash("Invalid user ID format", "danger")
-            return redirect(url_for('users_management'))
+        raw_username = request.form.get('username')
+        username = bleach.clean(raw_username) if raw_username else None
+        password = request.form.get('password')
+        confirm_password = request.form.get('confirm_password')
         
-        # Find user by ID
-        user = db.users.find_one({"_id": user_id_obj})
-        if not user:
-            flash("User not found", "danger")
-            return redirect(url_for('users_management'))
+        # Validate input
+        if not username or not password or not confirm_password:
+            return render_template('register.html', error_message='All fields are required')
         
-        if request.method == 'POST':
-            # Update user fields from form
-            update_data = {
-                "username": request.form.get('username'),
-                "email": request.form.get('email'),
-                "is_active": bool(request.form.get('is_active')),
-                "is_admin": bool(request.form.get('is_admin'))
-            }
+        if password != confirm_password:
+            return render_template('register.html', error_message='Passwords do not match')
+        
+        # Check if username already exists
+        existing_user = db.users.find_one({'username': username})
+        
+        if existing_user:
+            return render_template('register.html', error_message='Username already exists')
+        
+        # Generate API key as UUID (GUID)
+        api_key = str(uuid.uuid4())
+        
+        # Hash password
+        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+        
+        # Set admin status if username is 'admin' - ensure it's an integer
+        is_admin = 1 if username.lower() == 'admin' else 0
+        
+        # Insert user into database
+        try:
+            result = db.users.insert_one({
+                'username': username,
+                'password': hashed_password.decode('utf-8'),
+                'api_key': api_key,
+                'created_at': time.time(),
+                'last_login': time.time(),
+                'is_admin': is_admin  # Explicitly an integer
+            })
             
-            # Update balance if provided
-            new_balance = request.form.get('balance')
-            if new_balance is not None and new_balance.strip():
-                try:
-                    new_balance_float = float(new_balance)
-                    
-                    # Use upsert to create balance document if it doesn't exist
-                    db.balance.update_one(
-                        {"user_id": user_id_obj},
-                        {"$set": {"amount": new_balance_float}},
-                        upsert=True
-                    )
-                except ValueError:
-                    flash("Invalid balance value", "danger")
+            # Initialize balance for the user
+            db.balance.insert_one({
+                'user_id': result.inserted_id,
+                'amount': 0.0,
+                'last_updated': time.time()
+            })
             
-            # Update user document
-            result = db.users.update_one(
-                {"_id": user_id_obj},
-                {"$set": update_data}
-            )
+            # Get the new user
+            new_user = db.users.find_one({'_id': result.inserted_id})
             
-            if result.modified_count > 0:
-                flash("User updated successfully", "success")
-            else:
-                flash("No changes were made", "info")
-                
-            return redirect(url_for('user_details', user_id=user_id))
-        
-        # Get user balance
-        balance = db.balance.find_one({"user_id": user_id_obj})
-        balance_amount = balance.get("amount", 0) if balance else 0
-        
-        # Get recent transactions for this user with aggregation
-        transactions_pipeline = [
-            {"$match": {"user_id": user_id_obj}},
-            {"$sort": {"created_at": -1}},
-            {"$limit": 10},
-            {"$project": {
-                "amount": 1,
-                "type": 1,
-                "description": 1,
-                "created_at": 1
-            }}
-        ]
-        
-        transactions = list(db.transactions.aggregate(transactions_pipeline))
-        
-        # Format transactions for display
-        for transaction in transactions:
-            transaction["created_at_formatted"] = datetime.fromtimestamp(transaction["created_at"]).strftime("%Y-%m-%d %H:%M:%S")
+            # Store user ID as string in session
+            session['user_id'] = str(new_user['_id'])
+            session['username'] = username
+            session['is_admin'] = is_admin  # Use the same integer value
             
-        return render_template('admin/user_details.html', 
-                              user=user, 
-                              balance=balance_amount,
-                              transactions=transactions)
-    except Exception as e:
-        print(f"Error in user details: {e}")
-        flash(f"An error occurred: {str(e)}", "danger")
-        return redirect(url_for('users_management'))
+            return redirect(url_for('dashboard'))
+        except Exception as e:
+            return render_template('register.html', error_message=f'Registration failed: {str(e)}')
+    
+    return render_template('register.html')
 
 @app.route('/admin/add_balance', methods=['POST'])
 @admin_required
@@ -642,7 +542,7 @@ def admin_settings():
     for setting in db.settings.find():
         settings[setting['key']] = setting['value']
     
-    return jsonify({'status': 'error', 'message': 'Legacy route removed'})
+    return render_template('admin_settings.html', settings=settings)
 
 # Dashboard API endpoints
 @app.route('/get_user_info', methods=['POST'])
@@ -1637,3 +1537,8 @@ def process_hcaptcha_task(task_id, num_tasks):
             pass  # If we can't even update the error status, just log and continue
 
 # Add a compatibility route for admin_users to maintain backward compatibility with templates
+if __name__ == '__main__':
+    # Enable debug mode only in development environments
+    debug_mode = os.environ.get('FLASK_ENV') == 'development'
+    app.run(host='0.0.0.0', port=5000, debug=debug_mode)
+        
