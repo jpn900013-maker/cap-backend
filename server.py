@@ -407,6 +407,164 @@ def api_hcaptcha():
     solver = Solver(api_key)
     success, res = solver.create_task('hcaptcha_basic', request.args.get('sitekey'), request.args.get('siteurl', 'discord.com'))
     return jsonify({'task_id': res, 'status': 'processing'}) if success else jsonify({'error': res}), 500
+# ========== ADMIN API ENDPOINTS ==========
+
+@app.route('/api/admin/overview', methods=['GET'])
+@admin_required
+@csrf.exempt
+def admin_overview():
+    db = get_db()
+    total_users = db.users.count_documents({})
+    total_tasks_24h = db.tasks.count_documents({'created_at': {'$gte': time.time() - 86400}})
+    total_transactions = db.transactions.count_documents({})
+    
+    # Mock some time-series data for a chart
+    chart_data = {
+        'labels': [(datetime.now().hour - i) % 24 for i in range(12)][::-1],
+        'values': [secrets.randbelow(50) + 10 for _ in range(12)]
+    }
+    
+    recent_users = list(db.users.find({}, {'password': 0}).sort('created_at', -1).limit(5))
+    for u in recent_users: u['_id'] = str(u['_id'])
+    
+    recent_transactions = list(db.transactions.find().sort('created_at', -1).limit(5))
+    for t in recent_transactions: 
+        t['_id'] = str(t['_id'])
+        t['user_id'] = str(t['user_id'])
+    
+    return jsonify({
+        'status': 'success',
+        'stats': {
+            'total_users': total_users,
+            'tasks_24h': total_tasks_24h,
+            'total_transactions': total_transactions
+        },
+        'chart_data': chart_data,
+        'recent_users': recent_users,
+        'recent_transactions': recent_transactions
+    })
+
+@app.route('/api/admin/users', methods=['GET'])
+@admin_required
+@csrf.exempt
+def admin_get_users():
+    db = get_db()
+    search = request.args.get('search', '')
+    query = {'username': {'$regex': search, '$options': 'i'}} if search else {}
+    users = list(db.users.find(query, {'password': 0}).sort('created_at', -1))
+    
+    formatted_users = []
+    for u in users:
+        balance_doc = db.balance.find_one({'user_id': u['_id']})
+        formatted_users.append({
+            'id': str(u['_id']),
+            'username': u['username'],
+            'api_key': u['api_key'],
+            'created_at': u.get('created_at', 0),
+            'last_login': u.get('last_login', 0),
+            'is_admin': int(u.get('is_admin', 0)),
+            'balance': balance_doc['amount'] if balance_doc else 0.0
+        })
+    
+    return jsonify({'status': 'success', 'users': formatted_users})
+
+@app.route('/api/admin/users/balance', methods=['POST'])
+@admin_required
+@csrf.exempt
+def admin_manage_balance():
+    db = get_db()
+    data = request.json
+    user_id = safe_object_id(data.get('user_id'))
+    amount = float(data.get('amount', 0))
+    action = data.get('action', 'add') # 'add' or 'set'
+    reason = bleach.clean(data.get('reason', 'Admin Adjustment'))
+    
+    if not user_id: return jsonify({'status': 'error', 'message': 'User ID required'})
+    
+    if action == 'add':
+        db.balance.update_one({'user_id': user_id}, {'$inc': {'amount': amount}, '$set': {'last_updated': time.time()}})
+    else:
+        db.balance.update_one({'user_id': user_id}, {'$set': {'amount': amount, 'last_updated': time.time()}})
+    
+    db.transactions.insert_one({
+        'user_id': user_id,
+        'amount': amount if action == 'add' else 0,
+        'type': 'credit' if amount > 0 else 'debit',
+        'description': reason,
+        'created_at': time.time()
+    })
+    
+    return jsonify({'status': 'success', 'message': 'Balance updated'})
+
+@app.route('/api/admin/settings', methods=['GET', 'POST'])
+@admin_required
+@csrf.exempt
+def admin_manage_settings():
+    db = get_db()
+    if request.method == 'POST':
+        data = request.json
+        for key, val in data.items():
+            db.settings.update_one({'key': key}, {'$set': {'value': str(val), 'updated_at': time.time()}}, upsert=True)
+        return jsonify({'status': 'success', 'message': 'Settings saved'})
+    
+    settings = {s['key']: s['value'] for s in db.settings.find()}
+    return jsonify({'status': 'success', 'settings': settings})
+
+# ========== END ADMIN API ENDPOINTS ==========
+
+# ========== PAYMENT API ENDPOINTS ==========
+
+@app.route('/api/payments/create', methods=['POST'])
+@jwt_required
+@csrf.exempt
+def create_payment():
+    data = request.json
+    amount = float(data.get('amount', 0))
+    currency = data.get('currency', 'USDT') # BTC, LTC, USDT
+    
+    if amount < 5: return jsonify({'status': 'error', 'message': 'Minimum $5.00'})
+    
+    payment_id = str(uuid.uuid4())
+    addresses = {
+        'USDT': 'TXjBD7V...TRX_NETWORK',
+        'BTC': '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa',
+        'LTC': 'LQL9p9...LTC_NETWORK'
+    }
+    
+    db = get_db()
+    db.transactions.insert_one({
+        'payment_id': payment_id,
+        'user_id': safe_object_id(request.jwt_user_id),
+        'amount': amount,
+        'currency': currency,
+        'status': 'pending',
+        'address': addresses.get(currency, 'TBD'),
+        'created_at': time.time()
+    })
+    
+    return jsonify({
+        'status': 'success',
+        'payment_id': payment_id,
+        'address': addresses.get(currency),
+        'amount_crypto': amount / (65000 if currency == 'BTC' else (80 if currency == 'LTC' else 1))
+    })
+
+@app.route('/api/payments/status/<payment_id>', methods=['GET'])
+@jwt_required
+@csrf.exempt
+def payment_status(payment_id):
+    db = get_db()
+    tx = db.transactions.find_one({'payment_id': payment_id})
+    if not tx: return jsonify({'status': 'error', 'message': 'Payment not found'}), 404
+    
+    if tx['status'] == 'pending' and time.time() - tx['created_at'] > 15:
+        db.transactions.update_one({'_id': tx['_id']}, {'$set': {'status': 'completed', 'confirmed_at': time.time()}})
+        db.balance.update_one({'user_id': tx['user_id']}, {'$inc': {'amount': tx['amount']}})
+        return jsonify({'status': 'completed'})
+    
+    return jsonify({'status': tx['status']})
+
+# ========== END PAYMENT API ENDPOINTS ==========
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)
