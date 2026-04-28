@@ -322,6 +322,15 @@ def api_session():
     balance_doc = db.balance.find_one({'user_id': user['_id']})
     return jsonify({'status': 'success', 'user': {'username': user['username'], 'api_key': user['api_key'], 'is_admin': int(user.get('is_admin', 0)), 'balance': balance_doc['amount'] if balance_doc else 0.0}})
 
+@app.route('/api/reset_key', methods=['POST'])
+@jwt_required
+@csrf.exempt
+def api_reset_key():
+    db = get_db()
+    new_key = str(uuid.uuid4())
+    db.users.update_one({'_id': safe_object_id(request.jwt_user_id)}, {'$set': {'api_key': new_key}})
+    return jsonify({'status': 'success', 'new_key': new_key})
+
 # Solver logic helpers
 def validate_api_key(api_key):
     db = get_db()
@@ -474,12 +483,21 @@ def admin_get_users():
 def admin_manage_balance():
     db = get_db()
     data = request.json
-    user_id = safe_object_id(data.get('user_id'))
+    uid_raw = data.get('user_id')
+    username = data.get('username')
     amount = float(data.get('amount', 0))
-    action = data.get('action', 'add') # 'add' or 'set'
+    action = data.get('action', 'add')
     reason = bleach.clean(data.get('reason', 'Admin Adjustment'))
     
-    if not user_id: return jsonify({'status': 'error', 'message': 'User ID required'})
+    user = None
+    if uid_raw:
+        user = db.users.find_one({'_id': safe_object_id(uid_raw)})
+    elif username:
+        user = db.users.find_one({'username': username})
+        
+    if not user: return jsonify({'status': 'error', 'message': 'User not found'}), 404
+    
+    user_id = user['_id']
     
     if action == 'add':
         db.balance.update_one({'user_id': user_id}, {'$inc': {'amount': amount}, '$set': {'last_updated': time.time()}})
@@ -488,13 +506,13 @@ def admin_manage_balance():
     
     db.transactions.insert_one({
         'user_id': user_id,
-        'amount': amount if action == 'add' else 0,
-        'type': 'credit' if amount > 0 else 'debit',
+        'amount': amount if action == 'add' else (amount - db.balance.find_one({'user_id': user_id})['amount']),
+        'type': 'credit' if (amount > 0 or action == 'set') else 'debit',
         'description': reason,
         'created_at': time.time()
     })
     
-    return jsonify({'status': 'success', 'message': 'Balance updated'})
+    return jsonify({'status': 'success', 'message': f'Balance for {user["username"]} updated'})
 
 @app.route('/api/admin/settings', methods=['GET', 'POST'])
 @admin_required
@@ -508,7 +526,71 @@ def admin_manage_settings():
         return jsonify({'status': 'success', 'message': 'Settings saved'})
     
     settings = {s['key']: s['value'] for s in db.settings.find()}
+    # Ensure standard keys are present for UI
+    for key in ['basic_cost_per_1k', 'enterprise_cost_per_1k', 'min_balance']:
+        if key not in settings: settings[key] = "0.0"
     return jsonify({'status': 'success', 'settings': settings})
+
+# ========== DASHBOARD HELPER APIS ==========
+
+@app.route('/api/usage', methods=['GET'])
+@jwt_required
+@csrf.exempt
+def get_usage():
+    db = get_db()
+    user = db.users.find_one({'_id': safe_object_id(request.jwt_user_id)})
+    if not user: return jsonify({'status': 'error'}), 404
+    
+    daily_count = db.api_usage.count_documents({
+        'api_key': user['api_key'],
+        'timestamp': {'$gt': time.time() - 86400}
+    })
+    
+    total_solves = db.tasks.count_documents({'api_key': user['api_key'], 'status': 'solved'})
+    total_tasks = db.tasks.count_documents({'api_key': user['api_key']})
+    success_rate = (total_solves / total_tasks * 100) if total_tasks > 0 else 0
+    
+    return jsonify({
+        'status': 'success',
+        'daily_requests': daily_count,
+        'success_rate': success_rate
+    })
+
+@app.route('/api/tasks/history', methods=['POST'])
+@jwt_required
+@csrf.exempt
+def get_task_history():
+    db = get_db()
+    data = request.json
+    user = db.users.find_one({'_id': safe_object_id(request.jwt_user_id)})
+    if not user: return jsonify({'status': 'error'}), 404
+    
+    page = int(data.get('page', 1))
+    limit = 10
+    skip = (page - 1) * limit
+    
+    query = {'api_key': user['api_key']}
+    # Additional filters could be added here
+    
+    tasks = list(db.tasks.find(query).sort('created_at', -1).skip(skip).limit(limit))
+    total_tasks = db.tasks.count_documents(query)
+    
+    formatted = []
+    for t in tasks:
+        formatted.append({
+            'id': str(t['task_id']),
+            'type': t['task_type'],
+            'status': t['status'],
+            'timestamp': t['created_at']
+        })
+        
+    return jsonify({
+        'status': 'success',
+        'tasks': formatted,
+        'total_pages': math.ceil(total_tasks / limit)
+    })
+
+# ========== END DASHBOARD HELPER APIS ==========
 
 # ========== END ADMIN API ENDPOINTS ==========
 
