@@ -19,21 +19,6 @@ from datetime import datetime
 
 import logging
 log = logging.getLogger('werkzeug')
-log.setLevel(logging.ERROR)
-
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
-import bleach
-
-app = Flask(__name__, 
-    static_folder='website/static',
-    template_folder='website'
-)
-
-# Enable CORS for frontend (Vercel) to communicate with backend (Render)
-CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
-
-# JWT secret for token-based auth
 JWT_SECRET = os.environ.get('JWT_SECRET', secrets.token_hex(32))
 JWT_EXPIRY = 86400 * 7  # 7 days
 
