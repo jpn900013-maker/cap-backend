@@ -25,6 +25,8 @@ import bleach
 # Load environment variables
 load_dotenv('config.env')
 
+SERVER_START_TIME = time.time()
+
 # Initialize logging
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger('server')
@@ -262,6 +264,14 @@ def status():
                 font-weight: 600;
                 border: 1px solid rgba(139, 92, 246, 0.2);
             }
+            .uptime {
+                font-size: 0.85rem;
+                color: var(--zinc-400);
+                margin-top: 0.5rem;
+                margin-bottom: 1.5rem;
+                font-family: 'Inter', monospace;
+            }
+            .uptime span { color: var(--success); font-weight: 600; }
         </style>
     </head>
     <body>
@@ -269,8 +279,26 @@ def status():
             <div class="badge">9CAPTCHA CORE</div>
             <h1>System Online</h1>
             <p><span class="pulse"></span> 9Captcha API is fully operational</p>
+            <div class="uptime">Uptime: <span id="uptime"></span></div>
             <div style="font-size: 0.7rem; color: #3f3f46;">v1.0.0 &bull; Headless Engine</div>
         </div>
+        <script>
+            const startTime = """ + str(SERVER_START_TIME) + r""";
+            function updateUptime() {
+                const now = Date.now() / 1000;
+                let diff = Math.floor(now - startTime);
+                const d = Math.floor(diff / 86400); diff %= 86400;
+                const h = Math.floor(diff / 3600); diff %= 3600;
+                const m = Math.floor(diff / 60);
+                const s = diff % 60;
+                let parts = [];
+                if (d > 0) parts.push(d + 'd');
+                parts.push(h + 'h', m + 'm', s + 's');
+                document.getElementById('uptime').textContent = parts.join(' ');
+            }
+            updateUptime();
+            setInterval(updateUptime, 1000);
+        </script>
     </body>
     </html>
     """
