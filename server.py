@@ -407,6 +407,20 @@ def get_result(task_id):
     solver = Solver(api_key)
     status, result = solver.get_task_solution(task_id)
     if status == 'not_found': return jsonify({"error": "Task not found"}), 404
+    
+    # Auto-detect stale tasks stuck in 'solving' (e.g. killed by deploy restart)
+    if status == 'solving':
+        db = get_db()
+        task = db.tasks.find_one({'task_id': task_id})
+        if task and (time.time() - task.get('created_at', 0)) > 120:
+            db.tasks.update_one({'task_id': task_id}, {'$set': {'status': 'error', 'error': 'Solver timeout - task took too long', 'completed_at': time.time()}})
+            # Refund the user since the task was never solved
+            user = db.users.find_one({'api_key': api_key})
+            if user:
+                cost = get_task_cost(task.get('task_type', 'hcaptcha_basic'))
+                db.balance.update_one({'user_id': user['_id']}, {'$inc': {'amount': cost}})
+            return jsonify({"status": "error", "error": "Solver timeout - task took too long"})
+    
     return jsonify({"status": status, "solution": result} if status == 'solved' else {"status": status, "error": result})
 
 @app.route('/api/hcaptcha')
