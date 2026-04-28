@@ -300,8 +300,10 @@ def api_register():
     if not data: return jsonify({'status': 'error', 'message': 'JSON body required'})
     username = bleach.clean(data.get('username', ''))
     password = data.get('password', '')
-    if not username or not password or len(username) < 3 or len(password) < 6:
-        return jsonify({'status': 'error', 'message': 'Invalid requirements'})
+    if not username or len(username) < 3:
+        return jsonify({'status': 'error', 'message': 'Username must be at least 3 characters'})
+    if not password or len(password) < 6:
+        return jsonify({'status': 'error', 'message': 'Password must be at least 6 characters'})
     if db.users.find_one({'username': username}): return jsonify({'status': 'error', 'message': 'Username taken'})
     api_key = str(uuid.uuid4())
     hashed = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
