@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>9Captcha | Enterprise Automation</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='global.css') }}">
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" type="image/x-icon">
+    <style>
+        .hero {
+            padding: 120px 24px;
+            text-align: center;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .hero h1 {
+            font-size: 4rem;
+            letter-spacing: -0.04em;
+            line-height: 1.1;
+            margin-bottom: 24px;
+            color: #fff;
+        }
+
+        .hero p {
+            font-size: 1.25rem;
+            color: var(--text-secondary);
+            margin-bottom: 40px;
+            max-width: 600px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .hero-actions {
+            display: flex;
+            gap: 16px;
+            justify-content: center;
+        }
+
+        .terminal-window {
+            margin: 64px auto;
+            max-width: 800px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-strong);
+            border-radius: var(--radius-md);
+            overflow: hidden;
+            text-align: left;
+        }
+
+        .terminal-header {
+            display: flex;
+            align-items: center;
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border-strong);
+            background: var(--bg-secondary);
+        }
+
+        .terminal-dots {
+            display: flex;
+            gap: 8px;
+        }
+
+        .dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--border-strong);
+        }
+
+        .terminal-body {
+            padding: 24px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            line-height: 1.6;
+        }
+
+        .terminal-line .cmd { color: #fff; }
+        .terminal-line .success { color: var(--success); }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 24px;
+            max-width: 1200px;
+            margin: 0 auto 120px;
+            padding: 0 24px;
+        }
+
+        .feature-card {
+            padding: 32px;
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-md);
+            background: var(--bg-secondary);
+        }
+
+        .feature-icon {
+            width: 40px; height: 40px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-strong);
+            border-radius: var(--radius-sm);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 24px;
+        }
+
+        .feature-card h3 {
+            font-size: 1.25rem;
+            margin-bottom: 12px;
+        }
+
+        .feature-card p {
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+        }
+
+        @media (max-width: 768px) {
+            .hero h1 { font-size: 2.5rem; }
+            .features-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="/" class="brand-logo">
+                <div class="brand-icon"><img src="{{ url_for('static', filename='9captcha-logo.png') }}" style="width: 100%; height: auto; border-radius: inherit;"></div>
+                9Captcha
+            </a>
+            <div class="nav-actions flex gap-2">
+                <a href="/login" class="btn-secondary btn-sm">Log in</a>
+                <a href="/register" class="btn-primary btn-sm">Sign Up</a>
+            </div>
+        </div>
+    </nav>
+
+    <main>
+        <section class="hero animate-fade-in-up">
+            <h1>Enterprise CAPTCHA <br> Infrastructure</h1>
+            <p>Develop, scale, and secure your automation pipelines with our headless API solver. Built for developers taking their automation to production.</p>
+            <div class="hero-actions">
+                <a href="/register" class="btn-primary">Start Building</a>
+                <a href="/implement" class="btn-secondary">Read Documentation</a>
+            </div>
+        </section>
+
+        <section class="terminal-window animate-fade-in-up">
+            <div class="terminal-header">
+                <div class="terminal-dots">
+                    <div class="dot" style="background:#ff5f56"></div>
+                    <div class="dot" style="background:#ffbd2e"></div>
+                    <div class="dot" style="background:#27c93f"></div>
+                </div>
+            </div>
+            <div class="terminal-body">
+                <div class="terminal-line"><span class="cmd">$</span> pip install 9captcha-sdk</div>
+                <div class="terminal-line"><span class="success">Successfully installed 9captcha-sdk-1.0.4</span></div>
+                <br>
+                <div class="terminal-line"><span class="cmd">$</span> python</div>
+                <div class="terminal-line">>>> from 9captcha import Solver</div>
+                <div class="terminal-line">>>> client = Solver(api_key="your_key")</div>
+                <div class="terminal-line">>>> res = client.solve("hcaptcha", "discord.com")</div>
+                <div class="terminal-line">>>> print(res.token)</div>
+                <div class="terminal-line"><span class="success">P1_eyJ0eXAiOiJKV1QiLCJhbGci...</span></div>
+            </div>
+        </section>
+
+        <section class="features-grid">
+            <div class="feature-card">
+                <div class="feature-icon">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                </div>
+                <h3>Headless API</h3>
+                <p>Completely HTTP based execution. Skip browser extensions and execute logic straight off your Python or Node workers.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                </div>
+                <h3>Scale Ready</h3>
+                <p>Enterprise grade infrastructure supporting high-concurrency connections ensuring your pipelines never throttle.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M18 9l-5 5-4-4-5 5"/></svg>
+                </div>
+                <h3>Analytics</h3>
+                <p>Detailed performance analytics, logs, and dashboard metrics offering complete visibility into your operations.</p>
+            </div>
+        </section>
+    </main>
+
+</body>
+</html>

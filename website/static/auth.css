@@ -1,0 +1,135 @@
+/* Common Auth Styles */
+
+/* Navbar Adjustments */
+.navbar {
+  position: static;
+  background: transparent;
+  border-bottom: none;
+}
+
+/* Wrapper */
+.auth-wrapper {
+  min-height: calc(100vh - 80px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 24px;
+}
+
+/* Card */
+.auth-card {
+  width: 100%;
+  max-width: 440px;
+  padding: 40px;
+  background: var(--card-bg);
+  box-shadow: 0 20px 40px rgba(0,0,0,0.4);
+}
+
+.auth-header {
+  text-align: center;
+  margin-bottom: 32px;
+}
+
+.auth-header h2 {
+  font-size: 2rem;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+
+/* Form Styles */
+.form-group {
+  margin-bottom: 20px;
+  text-align: left;
+}
+
+.form-group label {
+  display: block;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+.custom-input {
+  background: rgba(0,0,0,0.5);
+  border: 1px solid var(--card-border);
+  color: white;
+  padding: 14px 16px;
+  border-radius: 12px;
+  font-family: inherit;
+  font-size: 1rem;
+  outline: none;
+  transition: var(--transition);
+}
+
+.custom-input:focus {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.2);
+  background: rgba(0,0,0,0.8);
+}
+
+.password-input-group {
+  position: relative;
+}
+
+.toggle-password {
+  position: absolute;
+  right: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  opacity: 0.5;
+  transition: var(--transition);
+}
+
+.toggle-password:hover {
+  opacity: 1;
+}
+
+.form-options {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: -8px;
+}
+
+.remember-me {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  gap: 8px;
+}
+
+.remember-me input {
+  accent-color: var(--accent-primary);
+  width: 16px; height: 16px;
+  cursor: pointer;
+}
+
+.error-message {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #ef4444;
+  padding: 12px;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  margin-bottom: 24px;
+  text-align: center;
+}
+
+/* Utilities reused */
+.w-full { width: 100%; }
+.mt-2 { margin-top: 8px; }
+.mt-6 { margin-top: 24px; }
+.text-sm { font-size: 0.9rem; }
+.text-secondary { color: var(--text-secondary); }
+.text-accent { color: var(--accent-primary); }
+.text-center { text-align: center; }
+.font-medium { font-weight: 500; }
+.flex { display: flex; }
+.justify-center { justify-content: center; }

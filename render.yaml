@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: 9captcha-api
+    runtime: python
+    buildCommand: "pip install -r requirements.txt && playwright install chromium"
+    startCommand: "gunicorn server:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120"
+    envVars:
+      - key: MONGO_URI
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+      - key: JWT_SECRET
+        generateValue: true
+      - key: GROQ_API_KEY
+        sync: false
+      - key: FLASK_ENV
+        value: production

@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>9Captcha - Auth</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='global.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='auth.css') }}">
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" type="image/x-icon">
+</head>
+
+<body>
+    <!-- Navbar -->
+    <nav class="navbar animate-fade-in-up delay-1">
+        <div class="nav-container">
+            <a href="/" class="brand-logo">
+                <div class="brand-icon"><img src="{{ url_for('static', filename='9captcha-logo.png') }}" style="width: 100%; height: auto; border-radius: inherit;"></div>
+                <span><span class="gradient-text">9</span>Captcha</span>
+            </a>
+            <div class="nav-actions">
+                <a href="/register" class="btn-primary btn-sm">Get Started</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="auth-wrapper">
+        <div class="glass-card auth-card animate-fade-in-up delay-2">
+            <div class="auth-header">
+                <h2>Welcome Back</h2>
+                <p class="text-secondary mt-2">Sign in to your 9Captcha account</p>
+            </div>
+
+            {% if error_message %}
+            <div class="error-message">{{ error_message }}</div>
+            {% endif %}
+
+            <form method="POST" action="/login" id="loginForm" class="auth-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+                <div class="form-group">
+                    <label for="username">Username</label>
+                    <input type="username" id="username" name="username" class="custom-input w-full" placeholder="Enter your username" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <div class="password-input-group">
+                        <input type="password" id="password" name="password" class="custom-input w-full" placeholder="Enter your password" required>
+                        <button type="button" class="toggle-password" aria-label="Toggle password visibility">
+                            <span class="eye-icon">👁</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="form-options">
+                    <label class="remember-me">
+                        <input type="checkbox" id="remember">
+                        <span class="checkmark"></span>
+                        <span class="text-sm">Remember me</span>
+                    </label>
+                    <a href="#" class="text-accent text-sm">Forgot password?</a>
+                </div>
+
+                <button type="submit" class="btn-primary w-full mt-6 auth-submit">
+                    Sign In
+                </button>
+            </form>
+
+            <div class="auth-footer mt-6 text-center">
+                <p class="text-secondary text-sm">Don't have an account? <a href="/register" class="text-accent font-medium">Sign up instead</a></p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Same core JS for form from old file -->
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const form = document.getElementById('loginForm');
+            const toggleButton = document.querySelector('.toggle-password');
+            const passwordInput = document.getElementById('password');
+
+            function handlePasswordToggle() {
+                const isPassword = passwordInput.type === 'password';
+                passwordInput.type = isPassword ? 'text' : 'password';
+                toggleButton.style.opacity = isPassword ? '1' : '0.5';
+            }
+
+            toggleButton?.addEventListener('click', handlePasswordToggle);
+
+            function showError(message) {
+                let errorDiv = document.querySelector('.error-message');
+                if (!errorDiv) {
+                    errorDiv = document.createElement('div');
+                    errorDiv.className = 'error-message';
+                    const formHeader = document.querySelector('.auth-header');
+                    formHeader.insertAdjacentElement('afterend', errorDiv);
+                }
+                errorDiv.textContent = message;
+                errorDiv.style.display = 'block';
+            }
+
+            // Remainder of identical form logic ...
+            async function handleFormSubmit(e) {
+                e.preventDefault();
+                const username = document.getElementById('username').value;
+                const submitButton = form.querySelector('.auth-submit');
+                submitButton.disabled = true;
+                submitButton.textContent = 'Signing in...';
+
+                try {
+                    const formData = new FormData(form);
+                    const response = await fetch('/login', { method: 'POST', body: formData });
+
+                    if (response.redirected) {
+                        if (document.getElementById('remember').checked) {
+                            localStorage.setItem('rememberedUsername', username);
+                        } else {
+                            localStorage.removeItem('rememberedUsername');
+                        }
+                        window.location.href = response.url;
+                        return;
+                    }
+
+                    const data = await response.text();
+                    if (data.includes('error-message')) {
+                        const tempDiv = document.createElement('div');
+                        tempDiv.innerHTML = data;
+                        const errorMessage = tempDiv.querySelector('.error-message')?.textContent;
+                        if (errorMessage) showError(errorMessage.trim());
+                    }
+                } catch (error) {
+                    showError('An error occurred. Please try again later.');
+                } finally {
+                    submitButton.disabled = false;
+                    submitButton.textContent = 'Sign In';
+                }
+            }
+
+            form?.addEventListener('submit', handleFormSubmit);
+
+            const rememberedUsername = localStorage.getItem('rememberedUsername');
+            if (rememberedUsername) {
+                document.getElementById('username').value = rememberedUsername;
+                document.getElementById('remember').checked = true;
+            }
+        });
+    </script>
+</body>
+</html>

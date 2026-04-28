@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>9Captcha - Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='global.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" type="image/x-icon">
+</head>
+
+<body>
+    <!-- Navbar -->
+    <nav class="navbar animate-fade-in-up delay-1">
+        <div class="nav-container">
+            <a href="/" class="brand-logo">
+                <div class="brand-icon"><img src="{{ url_for('static', filename='9captcha-logo.png') }}" style="width: 100%; height: auto; border-radius: inherit;"></div>
+                <!-- <span>Captcha<span class="gradient-text">9</span></span> -->
+            </a>
+            
+            <div class="nav-profile">
+                <a href="/implement" class="btn-secondary btn-sm">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg> 
+                    Dev Guide
+                </a>
+                <span class="username" id="username">{{ username }}</span>
+                <button class="btn-secondary btn-sm" onclick="logout()">
+                    ↪ Logout
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <div class="dashboard-wrapper">
+        <div class="dashboard-container">
+            <h1 class="page-title animate-fade-in-up">Overview</h1>
+            
+            <!-- Quick Stats Grid -->
+            <div class="stats-grid animate-fade-in-up delay-1">
+                <!-- Balance Card -->
+                <div class="glass-card stat-card interactive">
+                    <div class="card-header">
+                        <div class="stat-icon purple-bg">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M12 12h.01"/><path d="M17 12h.01"/><path d="M7 12h.01"/></svg>
+                        </div>
+                        <h3 class="card-title">Balance</h3>
+                    </div>
+                    <div class="stat-value">$<span id="currentBalance">{{ "%.2f"|format(balance) }}</span></div>
+                    <button class="btn-primary w-full mt-4" onclick="topUpBalance()">Top Up Balance</button>
+                </div>
+        
+                <!-- API Key Card -->
+                <div class="glass-card stat-card interactive">
+                    <div class="card-header">
+                        <div class="stat-icon blue-bg">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+                        </div>
+                        <h3 class="card-title">API Key</h3>
+                    </div>
+                    <div class="api-key-container mt-2">
+                        <div class="api-key-box" id="apiKey">{{ api_key }}</div>
+                        <button class="icon-btn" onclick="copyToClipboard()" title="Copy Key">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                            </svg>
+                        </button>
+                    </div>
+                    <button class="btn-secondary w-full mt-4 text-sm" onclick="resetKey()">Regenerate Key</button>
+                </div>
+                        
+                <!-- Usage Card -->
+                <div class="glass-card stat-card">
+                    <div class="card-header">
+                        <div class="stat-icon green-bg">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
+                        </div>
+                        <h3 class="card-title">Today's Usage</h3>
+                    </div>
+                    <div class="stat-value"><span id="today-usage">0</span></div>
+                    <div class="status-indicator mt-4">
+                        <span class="dot pulse"></span> Service Operational
+                    </div>
+                </div>
+
+                <!-- Success Rate Card -->
+                <div class="glass-card stat-card">
+                    <div class="card-header">
+                        <div class="stat-icon orange-bg">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4L12 14.01l-3-3"/></svg>
+                        </div>
+                        <h3 class="card-title">Success Rate</h3>
+                    </div>
+                    <div class="stat-value"><span id="success-rate">0%</span></div>
+                    <div class="mt-4 text-sm text-secondary">
+                        Overall solving reliability
+                    </div>
+                </div>
+            </div>
+
+            <!-- Main Content Area -->
+            <div class="content-grid animate-fade-in-up delay-2">
+                
+                <!-- Recent Tasks -->
+                <div class="glass-card full-width">
+                    <div class="section-header">
+                        <h2>Recent Activity</h2>
+                        <a href="#history" class="text-accent text-sm">View All</a>
+                    </div>
+                    <div class="table-container">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Task ID</th>
+                                    <th>Type</th>
+                                    <th>Status</th>
+                                    <th>Date</th>
+                                </tr>
+                            </thead>
+                            <tbody id="recent-tasks-container">
+                                {% if tasks %}
+                                    {% for task in tasks %}
+                                    <tr>
+                                        <td>{{ task.task_id[:8] }}...</td>
+                                        <td>{{ task.task_type }}</td>
+                                        <td>
+                                            {% if task.status == 'solved' %}
+                                            <span class="badge badge-green">Success</span>
+                                            {% elif task.status == 'error' or task.status == 'failed' %}
+                                            <span class="badge badge-red">Failed</span>
+                                            {% else %}
+                                            <span class="badge badge-purple">Pending</span>
+                                            {% endif %}
+                                        </td>
+                                        <td>{{ task.created_at | timestamp_to_date }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                {% else %}
+                                    <tr><td colspan="4" class="text-center text-secondary py-4" id="no-recent-tasks">No tasks found. Begin automating to see history.</td></tr>
+                                {% endif %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Detailed History -->
+                <div class="glass-card full-width mt-6" id="history">
+                    <div class="section-header space-between">
+                        <h2>Task History</h2>
+                        <div class="filters">
+                            <select id="date-filter" class="custom-select" onchange="filterTasks()">
+                                <option value="today">Today</option>
+                                <option value="yesterday">Yesterday</option>
+                                <option value="week">Last 7 Days</option>
+                                <option value="month">Last 30 Days</option>
+                                <option value="all" selected>All Time</option>
+                            </select>
+                            <select id="status-filter" class="custom-select" onchange="filterTasks()">
+                                <option value="all" selected>All Status</option>
+                                <option value="success">Success</option>
+                                <option value="failed">Failed</option>
+                                <option value="pending">Pending</option>
+                            </select>
+                            <div class="flex gap-2" style="align-items: center;">
+                                <label class="text-sm text-secondary" style="margin:0; display:flex; align-items:center; cursor:pointer;">
+                                    <input type="checkbox" id="autoRefreshToggle" checked onchange="toggleAutoRefresh()" style="margin-right:6px;"> Auto-Refresh
+                                </label>
+                                <button class="icon-btn" onclick="window.location.reload()" title="Force Refresh">
+                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.92-10.3l5.58 5.73"/></svg>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="table-container mt-4">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Task ID</th>
+                                    <th>Type</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="task-table-body">
+                                <!-- Loaded via JS -->
+                            </tbody>
+                        </table>
+                        <div id="no-tasks-message" class="text-center hidden py-8 text-secondary">No tasks match your filters</div>
+                    </div>
+                    
+                    <div class="pagination mt-4">
+                        <button id="prev-page" class="btn-secondary btn-sm" onclick="changePage(-1)" disabled>Prev</button>
+                        <span id="page-info" class="text-sm">Page 1</span>
+                        <button id="next-page" class="btn-secondary btn-sm" onclick="changePage(1)" disabled>Next</button>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <!-- Modals (Hidden by default) -->
+    
+    <!-- Top-Up Modal -->
+    <div id="topUpModal" class="modal-backdrop hidden">
+        <div class="glass-card modal-content">
+            <div class="modal-header">
+                <h2>Top Up Balance</h2>
+                <button class="close-btn" onclick="closeModal('topUpModal')">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="amount-grid mb-4">
+                    <button class="amount-btn" data-amount="10">$10</button>
+                    <button class="amount-btn" data-amount="25">$25</button>
+                    <button class="amount-btn" data-amount="50">$50</button>
+                    <button class="amount-btn" data-amount="100">$100</button>
+                </div>
+                <div class="input-group mb-4">
+                    <input type="number" id="customAmount" class="custom-input" placeholder="Custom amount (min $5)" min="5">
+                </div>
+                
+                <div class="input-group mb-4">
+                    <label class="text-sm text-secondary mb-2" style="display:block;">Select Payment Method</label>
+                    <div class="payment-methods grid gap-2" style="display:grid; grid-template-columns: 1fr 1fr; margin-bottom: 16px;">
+                        <button class="btn-secondary method-btn active btn-primary" onclick="selectPayment('btc')">₿ BTC</button>
+                        <button class="btn-secondary method-btn" onclick="selectPayment('ltc')">Ł LTC</button>
+                        <button class="btn-secondary method-btn" onclick="selectPayment('usdt')">₮ USDT</button>
+                        <button class="btn-secondary method-btn" onclick="selectPayment('upi')">📱 UPI</button>
+                    </div>
+                </div>
+                
+                <div id="paymentDetails" class="receipt-box text-center mt-4">
+                    <p class="text-sm text-secondary mb-2">Send payment to the address below. Your balance will be credited automatically.</p>
+                    <div id="paymentAddress" class="api-key-box mb-2" style="font-size: 0.85rem; padding: 12px; word-break: break-all;">bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh</div>
+                    <button class="btn-secondary btn-sm w-full mt-2" onclick="copyPaymentAddress()">Copy Address</button>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="closeModal('topUpModal')">Close</button>
+                <button class="btn-primary" onclick="processTopUp()">I Have Paid</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Reset Key Modal -->
+    <div id="resetKeyModal" class="modal-backdrop hidden">
+        <div class="glass-card modal-content">
+            <div class="modal-header">
+                <h2>Regenerate API Key</h2>
+                <button class="close-btn" onclick="closeModal('resetKeyModal')">×</button>
+            </div>
+            <div class="modal-body py-4">
+                <p class="text-secondary text-center">Are you sure? Your old key will stop working immediately.</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="closeModal('resetKeyModal')">Cancel</button>
+                <button class="btn-danger" onclick="confirmResetKey()">Regenerate Key</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <script>
+        // Keep the existing JS logic from the old dashboard.html, 
+        // adjusting UI updating targeting to match new IDs/Classes if necessary.
+        
+        let currentCoupon = null;
+        let currentAmount = 0;
+
+        function showToast(message, type = 'success') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = `glass-card toast toast-${type}`;
+            toast.textContent = message;
+            container.appendChild(toast);
+            
+            setTimeout(() => toast.style.opacity = '1', 10);
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+
+        function closeModal(modalId) {
+            const modal = document.getElementById(modalId);
+            if (modal) {
+                modal.classList.add('hidden');
+                modal.style.display = 'none'; // Fallback
+            }
+        }
+        
+        // Modal toggles
+        function topUpBalance() {
+            const m = document.getElementById('topUpModal');
+            m.classList.remove('hidden');
+            m.style.display = 'flex';
+        }
+        
+        function resetKey() {
+            const m = document.getElementById('resetKeyModal');
+            m.classList.remove('hidden');
+            m.style.display = 'flex';
+        }
+
+        function copyToClipboard() {
+            const apiKey = document.getElementById('apiKey').innerText;
+            navigator.clipboard.writeText(apiKey).then(() => showToast('API key copied.'));
+        }
+
+        function logout() {
+            window.location.href = '/logout';
+        }
+
+        const addresses = {
+            'btc': 'bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh',
+            'ltc': 'ltc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjh99a',
+            'usdt': 'TMa1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2',
+            'upi': 'merchant9captcha@upi'
+        };
+
+        function selectPayment(method) {
+            document.querySelectorAll('.method-btn').forEach(btn => {
+                btn.classList.remove('active', 'btn-primary');
+                btn.classList.add('btn-secondary');
+            });
+            event.target.classList.remove('btn-secondary');
+            event.target.classList.add('active', 'btn-primary');
+            document.getElementById('paymentAddress').textContent = addresses[method];
+        }
+
+        function copyPaymentAddress() {
+            const addr = document.getElementById('paymentAddress').textContent;
+            navigator.clipboard.writeText(addr).then(() => showToast('Payment address copied.'));
+        }
+
+        function processTopUp() {
+            showToast("Payment confirming. Balance will update shortly.");
+            closeModal('topUpModal');
+        }
+        
+        function confirmResetKey() {
+            // Usually this calls an endpoint to generate a new key.
+            // For now, we simulate success.
+            alert("API Key regeneration requested.");
+            closeModal('resetKeyModal');
+        }
+
+        // Auto Refresh Logic (Every 15s)
+        let refreshInterval = setInterval(() => window.location.reload(), 15000);
+        function toggleAutoRefresh() {
+            const isChecked = document.getElementById('autoRefreshToggle').checked;
+            if (isChecked) {
+                refreshInterval = setInterval(() => window.location.reload(), 15000);
+                showToast("Auto-refresh enabled");
+            } else {
+                clearInterval(refreshInterval);
+                showToast("Auto-refresh paused");
+            }
+        }
+
+        let currentPage = 1;
+        let totalPages = 1;
+
+        async function filterTasks() {
+            currentPage = 1;
+            await fetchTaskHistory();
+        }
+
+        async function changePage(delta) {
+            currentPage += delta;
+            if (currentPage < 1) currentPage = 1;
+            if (currentPage > totalPages) currentPage = totalPages;
+            await fetchTaskHistory();
+        }
+
+        async function fetchTaskHistory() {
+            try {
+                const apiKey = document.getElementById('apiKey').textContent.trim();
+                const dateFilter = document.getElementById('date-filter').value;
+                const statusFilter = document.getElementById('status-filter').value;
+                
+                const res = await fetch('/get_task_history', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ 
+                        key: apiKey,
+                        page: currentPage,
+                        date_filter: dateFilter,
+                        status_filter: statusFilter
+                    })
+                });
+                const data = await res.json();
+                
+                if (data.status === 'success') {
+                    totalPages = data.total_pages || 1;
+                    currentPage = data.current_page || 1;
+                    
+                    const tbody = document.getElementById('task-table-body');
+                    if (data.tasks.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="4" class="text-secondary text-center py-4">No tasks match your filters.</td></tr>';
+                        document.getElementById('prev-page').disabled = true;
+                        document.getElementById('next-page').disabled = true;
+                    } else {
+                        let html = '';
+                        data.tasks.forEach(task => {
+                            const date = new Date(task.timestamp * 1000).toLocaleString('en-US', {hour12:false});
+                            let badgeColor = task.status === 'solved' ? 'green' : (task.status === 'error' || task.status === 'failed' ? 'red' : 'purple');
+                            let statusTxt = task.status.charAt(0).toUpperCase() + task.status.slice(1);
+                            
+                            html += `<tr>
+                                <td>${date}</td>
+                                <td class="font-mono text-sm">${task.id.slice(0,8)}...${task.id.slice(-4)}</td>
+                                <td>${task.type}</td>
+                                <td><span class="badge badge-${badgeColor}">${statusTxt}</span></td>
+                            </tr>`;
+                        });
+                        tbody.innerHTML = html;
+                        
+                        document.getElementById('prev-page').disabled = currentPage <= 1;
+                        document.getElementById('next-page').disabled = currentPage >= totalPages;
+                    }
+                    
+                    const prevBtn = document.getElementById('prev-page');
+                    if (prevBtn && prevBtn.nextElementSibling) {
+                        prevBtn.nextElementSibling.textContent = `Page ${currentPage} of ${Math.max(1, totalPages)}`;
+                    }
+                }
+            } catch(e) {
+                console.error('Failed to fetch tasks:', e);
+            }
+        }
+
+        async function fetchStats() {
+            try {
+                const apiKey = document.getElementById('apiKey').textContent.trim();
+                
+                const resUsage = await fetch('/get_daily_usage', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ key: apiKey })
+                });
+                const dataUsage = await resUsage.json();
+                if(dataUsage.status === 'success') {
+                    const el = document.getElementById('today-usage');
+                    if (el) el.textContent = dataUsage.daily_requests;
+                }
+                
+                const resRate = await fetch('/get_success_rate', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ key: apiKey })
+                });
+                const dataRate = await resRate.json();
+                if(dataRate.status === 'success') {
+                    const el = document.getElementById('success-rate');
+                    if (el) el.textContent = dataRate.success_rate.toFixed(1) + '%';
+                }
+            } catch(e) {
+                console.error('Failed to fetch stats:', e);
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchTaskHistory();
+            fetchStats();
+        });
+    </script>
+</body>
+</html>

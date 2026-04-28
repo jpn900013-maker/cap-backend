@@ -1,0 +1,17 @@
+flask
+flask_wtf
+flask-cors
+flask-limiter
+bcrypt
+requests
+tls-client2
+datetime
+numpy
+playwright
+asyncio
+pyjwt
+groq
+pymongo
+python-dotenv
+bleach
+gunicorn
