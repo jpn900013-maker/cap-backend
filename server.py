@@ -584,7 +584,7 @@ def get_task_history():
     user = db.users.find_one({'_id': safe_object_id(request.jwt_user_id)})
     if not user: return jsonify({'status': 'error'}), 404
     
-    page = int(data.get('page', 1))
+    page = max(1, int(data.get('page', 1)))
     limit = 10
     skip = (page - 1) * limit
     
