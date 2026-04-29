@@ -180,78 +180,108 @@ class hcaptcha:
         req_q = self.captcha2.get("requester_question", {}).get("en", "")
         full_question = q if not req_q or req_q in q else f"{req_q} {q}"
         hashed_q = hashlib.sha1(q.encode()).hexdigest()
-        logger.info(f"questin:\n{full_question}")
+        logger.info(f"question:\n{full_question}")
 
-        # ---- Native regex solvers (instant, no LLM needed) ----
+        lower_q = full_question.lower()
+        ans = None
 
-        # German: "Lösche alle Vorkommen von X in Y"
-        if "vorkommen" in full_question.lower() or "lösche" in full_question.lower():
+        # ---- Native solvers (instant, no LLM needed) ----
+
+        # 1. DELETE pattern: "Delete/Remove/Lösche all occurrences of X in Y"
+        if any(kw in lower_q for kw in ['delete', 'remove', 'lösche', 'vorkommen', 'entferne']):
             digits = re.findall(r'\d+', full_question)
-            if len(digits) == 2 and len(digits[0]) == 1:
-                ans = digits[1].replace(digits[0], "")
-                logger.info(f"Answer:\n{ans}")
-                self.answers[hashed_q] = ans
-                return task['task_key'], {'text': ans}
+            if len(digits) >= 2:
+                # Find the single digit to delete and the number
+                single_digits = [d for d in digits if len(d) == 1]
+                numbers = [d for d in digits if len(d) >= 4]
+                if single_digits and numbers:
+                    ans = numbers[-1].replace(single_digits[0], "")
 
-        # English: "Delete all occurrences of X in Y"
-        del_match = re.search(r'[Dd]elete\s+all\s+occurrences?\s+of\s+(\d)\s+in\s+(\d+)', full_question)
-        if del_match:
-            ans = del_match.group(2).replace(del_match.group(1), "")
-            logger.info(f"Answer:\n{ans}")
-            self.answers[hashed_q] = ans
-            return task['task_key'], {'text': ans}
+        # 2. REPLACE LAST CHARACTER pattern (universal — handles ALL observed variants)
+        # Variants seen:
+        #   "Replace the last character with 3 only when the ending character is 6 in 985283"
+        #   "When the final character is 8, change only that last character to 2 in 506877"
+        #   "Only if the ending is 0, replace the last character with 8 in 631416"
+        #   "If it ends with 3, replace that final 3 with 9 in 993493"
+        #   "Ersetze das letzte Zeichen durch X wenn das Endzeichen Y ist in Z"
+        elif any(kw in lower_q for kw in ['last character', 'last digit', 'letzte', 'final character', 'final digit', 'ending character', 'ending is', 'ends with', 'endzeichen']):
+            digits = re.findall(r'\d+', full_question)
+            numbers = [d for d in digits if len(d) >= 4]
+            single_digits = [d for d in digits if len(d) == 1]
+            
+            if numbers and len(single_digits) >= 2:
+                number = numbers[-1]  # The big number to modify
+                
+                # Figure out which single digit is "replace with" and which is "condition"
+                # Strategy: find the condition digit (what the last char must be) and replacement digit
+                # Look for keywords near each digit to determine roles
+                
+                # Find positions of single digits in the text
+                replace_digit = None
+                condition_digit = None
+                
+                for sd in single_digits:
+                    # Find position of this digit in the question
+                    pos = full_question.find(sd)
+                    # Get surrounding context (30 chars before)
+                    context_before = full_question[max(0, pos-40):pos].lower()
+                    context_after = full_question[pos:pos+40].lower()
+                    
+                    if any(kw in context_before for kw in ['with', 'to', 'durch', 'zu']):
+                        replace_digit = sd
+                    elif any(kw in context_before for kw in ['is', 'ends', 'ending', 'final', 'endzeichen', 'wenn']):
+                        condition_digit = sd
+                    elif any(kw in context_after for kw in ['replace', 'change', 'ersetze', 'ändere']):
+                        condition_digit = sd
+                
+                # If we couldn't determine roles from context, use order heuristic:
+                # In most patterns, the first single digit mentioned after "with/to" is replace,
+                # and the one near "is/ends" is condition 
+                if replace_digit is None or condition_digit is None:
+                    # Fallback: try all pairs and pick the consistent one
+                    for i, sd1 in enumerate(single_digits):
+                        for j, sd2 in enumerate(single_digits):
+                            if i != j:
+                                # Try sd1=replace, sd2=condition
+                                if replace_digit is None:
+                                    replace_digit = sd1
+                                if condition_digit is None:
+                                    condition_digit = sd2
+                                break
+                        if replace_digit and condition_digit:
+                            break
+                
+                if replace_digit and condition_digit and number:
+                    if number[-1] == condition_digit:
+                        ans = number[:-1] + replace_digit
+                    else:
+                        ans = number
+                    logger.info(f"[REGEX-LAST] condition={condition_digit} replace={replace_digit} number={number} → {ans}")
 
-        # German: "Ersetze das letzte Zeichen durch X, aber nur wenn das Endzeichen Y ist in Z"
-        replace_end = re.search(
-            r'(?:Ersetze|[Ää]ndere)\s+.*?(?:letzte|end|last)\s*(?:zeichen|character|digit).*?(?:durch|zu|to)\s*(\d).*?(?:wenn|if).*?(?:endzeichen|letzte|last|end)\s*(\d).*?(\d{4,})',
-            full_question, re.IGNORECASE
-        )
-        if replace_end:
-            new_char = replace_end.group(1)
-            target_char = replace_end.group(2)
-            number = replace_end.group(3)
-            ans = number[:-1] + new_char if number[-1] == target_char else number
-            logger.info(f"Answer:\n{ans}")
-            self.answers[hashed_q] = ans
-            return task['task_key'], {'text': ans}
+        # 3. REPLACE FIRST CHARACTER pattern
+        elif any(kw in lower_q for kw in ['first character', 'first digit', 'erste']):
+            digits = re.findall(r'\d+', full_question)
+            numbers = [d for d in digits if len(d) >= 4]
+            single_digits = [d for d in digits if len(d) == 1]
+            if numbers and single_digits:
+                number = numbers[-1]
+                new_char = single_digits[0]
+                ans = new_char + number[1:]
 
-        # English: "Replace the last character with X if it is Y in Z"
-        replace_last_en = re.search(
-            r'[Rr]eplace\s+.*?last\s*(?:character|digit).*?(?:with|to)\s*(\d).*?if.*?(?:is|equals?)\s*(\d).*?in\s+(\d{4,})',
-            full_question, re.IGNORECASE
-        )
-        if replace_last_en:
-            new_char = replace_last_en.group(1)
-            target_char = replace_last_en.group(2)
-            number = replace_last_en.group(3)
-            ans = number[:-1] + new_char if number[-1] == target_char else number
-            logger.info(f"Answer:\n{ans}")
-            self.answers[hashed_q] = ans
-            return task['task_key'], {'text': ans}
+        # 4. Simple arithmetic
+        elif not ans:
+            arith_match = re.search(r'(\d+)\s*([+\-*/×÷])\s*(\d+)', full_question)
+            if arith_match:
+                a, op, b = int(arith_match.group(1)), arith_match.group(2), int(arith_match.group(3))
+                if op in ('+',): ans = str(a + b)
+                elif op in ('-',): ans = str(a - b)
+                elif op in ('*', '×'): ans = str(a * b)
+                elif op in ('/', '÷'): ans = str(a // b) if b != 0 else "0"
+                else: ans = str(a + b)
 
-        # German/English: "Ändere/Change the first digit to X in Y"
-        change_first = re.search(
-            r'(?:ändere|change)\s+.*?(?:erste|first)\s*(?:zeichen|character|digit).*?(?:zu|to)\s*(\d).*?(\d{4,})',
-            full_question, re.IGNORECASE
-        )
-        if change_first:
-            new_char = change_first.group(1)
-            number = change_first.group(2)
-            ans = new_char + number[1:]
-            logger.info(f"Answer:\n{ans}")
-            self.answers[hashed_q] = ans
-            return task['task_key'], {'text': ans}
-
-        # Simple arithmetic: "What is X + Y?" or "X + Y = ?"
-        arith_match = re.search(r'(\d+)\s*([+\-*/×÷])\s*(\d+)', full_question)
-        if arith_match:
-            a, op, b = int(arith_match.group(1)), arith_match.group(2), int(arith_match.group(3))
-            if op in ('+',): ans = str(a + b)
-            elif op in ('-',): ans = str(a - b)
-            elif op in ('*', '×'): ans = str(a * b)
-            elif op in ('/', '÷'): ans = str(a // b) if b != 0 else "0"
-            else: ans = str(a + b)
-            logger.info(f"Answer:\n{ans}")
+        # Return native answer if found
+        if ans is not None:
+            logger.info(f"Answer (native):\n{ans}")
             self.answers[hashed_q] = ans
             return task['task_key'], {'text': ans}
 
@@ -261,29 +291,31 @@ class hcaptcha:
                 messages=[{
                     "role": "user",
                     "content": (
-                        "You are an expert text captcha solver. "
-                        "Read this puzzle VERY carefully. It may be in German or English. "
-                        "Common patterns: deleting digits, replacing characters, simple math. "
-                        "Respond with ONLY the final answer (just the number/word, nothing else).\n"
+                        "You are solving a text captcha. Read VERY carefully.\n"
+                        "RULES:\n"
+                        "- If asked to replace the last character: check if the condition is met FIRST. "
+                        "If the last digit does NOT match the condition, return the number UNCHANGED.\n"
+                        "- If asked to delete occurrences of a digit: remove ALL instances of that digit.\n"
+                        "- Respond with ONLY the final number, nothing else.\n\n"
                         f"Question: {full_question}"
                     )
                 }],
                 model="llama-3.3-70b-versatile",
-                temperature=0.1,
-                max_tokens=64,
+                temperature=0.0,
+                max_tokens=32,
             )
 
             if response:
                 response_text = response.choices[0].message.content.strip()
-                # Clean up: remove quotes, dots, extra whitespace
-                response_text = response_text.strip('"\'., ').strip()
-                logger.info(f"Answer:\n{response_text}")
-                self.answers[hashed_q] = response_text
-                return task['task_key'], {'text': response_text}
+                response_text = re.sub(r'[^0-9]', '', response_text)  # Keep only digits
+                if response_text:
+                    logger.info(f"Answer (LLM):\n{response_text}")
+                    self.answers[hashed_q] = response_text
+                    return task['task_key'], {'text': response_text}
         except Exception as e:
             logger.error(f"Groq exception: {e}")
 
-        logger.warning("Groq response empty/failed, defaulting to 0")
+        logger.warning("All solvers failed, defaulting to 0")
         return task['task_key'], {'text': "0"}
 
     def solve(self) -> str:
