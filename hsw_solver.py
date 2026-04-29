@@ -1,11 +1,8 @@
-import tls_client, re, jwt, asyncio
-
-from flask import Flask, request
+import tls_client, re, jwt, asyncio, threading
 
 from playwright.async_api import async_playwright
 
 session = tls_client.Session(client_identifier="chrome_120", random_tls_extension_order=True)
-
 session.headers = {
     'accept': '*/*',
     'accept-language': 'en-US,en;q=0.9',
@@ -21,46 +18,86 @@ session.headers = {
     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
 }
 
-params = {
-    'render': 'explicit',
-    'onload': 'hcaptchaOnLoad',
-    'recaptchacompat': 'off',
-}
+# ---- Persistent browser + page pool for HSW computation ----
+_pw = None
+_browser = None
+_page = None           # single persistent page
+_hsw_js_cache = {}     # hsw_url -> js text
+_current_hsw_url = None  # currently loaded hsw.js url in the page
+_lock = asyncio.Lock()
 
 
-async def hsw(req: str, site: str, sitekey: str) -> None:
-    pw = await async_playwright().start()
-    browser = await pw.chromium.launch()
-    page = await browser.new_page()
-    await page.route(f"https://{site}/", lambda r: r.fulfill(status=200, content_type="text/html",))
-    await page.goto(f"https://{site}/")
+async def _ensure_page():
+    """Get or create a persistent Playwright browser and page."""
+    global _pw, _browser, _page, _current_hsw_url
+    
+    # Check if browser crashed
+    if _browser is not None and not _browser.is_connected():
+        _browser = None
+        _page = None
+        _current_hsw_url = None
 
-    await page.wait_for_load_state('domcontentloaded')
+    # Launch browser if needed
+    if _browser is None:
+        if _pw is None:
+            _pw = await async_playwright().start()
+        _browser = await _pw.chromium.launch(
+            args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--disable-extensions"]
+        )
+        _page = None
+        _current_hsw_url = None
+
+    # Create page if needed
+    if _page is None or _page.is_closed():
+        context = await _browser.new_context()
+        _page = await context.new_page()
+        await _page.route("**/*", lambda r: r.fulfill(status=200, content_type="text/html", body="<html></html>"))
+        await _page.goto("about:blank")
+        await _page.wait_for_load_state('domcontentloaded')
+        # Patch webdriver detection
+        await _page.add_script_tag(content='Object.defineProperty(navigator, "webdriver", {"get": () => false})')
+        _current_hsw_url = None
+
+    return _page
 
 
-    js = session.get('https://js.hcaptcha.com/1/api.js', params=params).text
+async def _get_hsw_js(url: str) -> str:
+    """Download and cache hsw.js."""
+    if url not in _hsw_js_cache:
+        _hsw_js_cache[url] = session.get(url).text
+    return _hsw_js_cache[url]
 
-    version = re.findall(r'v1\/([A-Za-z0-9]+)\/static', js)[1]
 
-    token = session.post('https://api2.hcaptcha.com/checksiteconfig', params={
-        'v': version,
-        'host': f'{site}',
-        'sitekey': f'{sitekey}',
-        'sc': '1',
-        'swa': '1',
-        'spst': 's',
-    }).json()["c"]["req"]
+async def hsw(req: str, site: str, sitekey: str) -> str:
+    """Compute hCaptcha HSW proof-of-work token using a persistent page.
+    
+    Only re-injects hsw.js if the version changed. Otherwise just calls hsw(token)
+    on the already-loaded page, making subsequent calls near-instant.
+    """
+    global _current_hsw_url
 
-    url: str = "https://newassets.hcaptcha.com" + jwt.decode(token, options={"verify_signature": False})["l"] + "/hsw.js"
+    async with _lock:
+        page = await _ensure_page()
 
-    version = url.split("/c/")[1].split("/")[0]
+        try:
+            # Decode HSW URL from the JWT token
+            hsw_url = "https://newassets.hcaptcha.com" + jwt.decode(req, options={"verify_signature": False})["l"] + "/hsw.js"
+        except Exception:
+            # Fallback: if JWT decode fails, create a fresh context
+            hsw_url = None
 
-    hsw_js = session.get(f"{url}").text
-    await page.add_script_tag(content="Object.defineProperty(navigator, \"webdriver\", {\"get\": () => false})")
-    await page.add_script_tag(content=hsw_js)
+        if hsw_url:
+            # Only reload hsw.js if the URL changed (new hCaptcha version)
+            if hsw_url != _current_hsw_url:
+                hsw_js = await _get_hsw_js(hsw_url)
+                await page.evaluate("() => { window.hsw = undefined; }")
+                await page.add_script_tag(content=hsw_js)
+                _current_hsw_url = hsw_url
 
-    result = await page.evaluate(f"hsw('{req}')")
-
-    await browser.close()
-    await pw.stop()
-    return result
+        try:
+            result = await page.evaluate(f"hsw('{req}')")
+            return result
+        except Exception as e:
+            # If evaluation fails, reset the page for next call
+            _current_hsw_url = None
+            raise e
