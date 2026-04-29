@@ -104,6 +104,15 @@ class hcaptcha:
         # Per-solve session — thread safe, no shared state
         self.session = tls_client.Session(client_identifier="chrome_120", random_tls_extension_order=True)
         self.session.headers = self.headers
+        
+        if proxy:
+            parts = proxy.split(":")
+            if len(parts) == 4:
+                ip, port, user, pwd = parts
+                formatted_proxy = f"http://{user}:{pwd}@{ip}:{port}"
+            else:
+                formatted_proxy = f"http://{proxy}" if not proxy.startswith("http") else proxy
+            self.session.proxies = {"http": formatted_proxy, "https": formatted_proxy}
 
         # Motion data with matching UA (uses en-US language internally)
         self.motion = motion_data(ua, f"https://{self.host}")
