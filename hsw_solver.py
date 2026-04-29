@@ -18,19 +18,41 @@ session.headers = {
     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
 }
 
-# ---- Persistent browser + page pool for HSW computation ----
+# ---- Dedicated event loop thread for HSW computation ----
+# This ensures all async playwright calls run on the SAME event loop,
+# preventing 'NoneType has no attribute send' errors from asyncio.run()
+# creating separate loops per thread.
+
+_loop = None
+_loop_thread = None
 _pw = None
 _browser = None
-_page = None           # single persistent page
-_hsw_js_cache = {}     # hsw_url -> js text
+_page = None
+_hsw_js_cache = {}      # hsw_url -> js text
 _current_hsw_url = None  # currently loaded hsw.js url in the page
-_lock = asyncio.Lock()
+_lock = None             # asyncio.Lock on the dedicated loop
+
+
+def _start_loop(loop):
+    """Run the event loop forever in a background thread."""
+    asyncio.set_event_loop(loop)
+    loop.run_forever()
+
+
+def _ensure_loop():
+    """Create the dedicated event loop and thread if not already running."""
+    global _loop, _loop_thread, _lock
+    if _loop is None or not _loop.is_running():
+        _loop = asyncio.new_event_loop()
+        _lock = asyncio.Lock()
+        _loop_thread = threading.Thread(target=_start_loop, args=(_loop,), daemon=True)
+        _loop_thread.start()
 
 
 async def _ensure_page():
     """Get or create a persistent Playwright browser and page."""
     global _pw, _browser, _page, _current_hsw_url
-    
+
     # Check if browser crashed
     if _browser is not None and not _browser.is_connected():
         _browser = None
@@ -68,22 +90,16 @@ async def _get_hsw_js(url: str) -> str:
     return _hsw_js_cache[url]
 
 
-async def hsw(req: str, site: str, sitekey: str) -> str:
-    """Compute hCaptcha HSW proof-of-work token using a persistent page.
-    
-    Only re-injects hsw.js if the version changed. Otherwise just calls hsw(token)
-    on the already-loaded page, making subsequent calls near-instant.
-    """
+async def _hsw_impl(req: str, site: str, sitekey: str) -> str:
+    """Internal HSW implementation — runs on the dedicated event loop."""
     global _current_hsw_url
 
     async with _lock:
         page = await _ensure_page()
 
         try:
-            # Decode HSW URL from the JWT token
             hsw_url = "https://newassets.hcaptcha.com" + jwt.decode(req, options={"verify_signature": False})["l"] + "/hsw.js"
         except Exception:
-            # Fallback: if JWT decode fails, create a fresh context
             hsw_url = None
 
         if hsw_url:
@@ -98,6 +114,17 @@ async def hsw(req: str, site: str, sitekey: str) -> str:
             result = await page.evaluate(f"hsw('{req}')")
             return result
         except Exception as e:
-            # If evaluation fails, reset the page for next call
+            # Reset page state for next call
             _current_hsw_url = None
             raise e
+
+
+async def hsw(req: str, site: str, sitekey: str) -> str:
+    """Compute hCaptcha HSW proof-of-work token.
+    
+    Thread-safe: dispatches to a dedicated event loop so multiple solver
+    threads can call this concurrently without event loop conflicts.
+    """
+    _ensure_loop()
+    future = asyncio.run_coroutine_threadsafe(_hsw_impl(req, site, sitekey), _loop)
+    return future.result(timeout=30)

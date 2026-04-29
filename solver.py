@@ -1,4 +1,4 @@
-import tls_client, re, json, asyncio, inspect, random
+import tls_client, re, json, inspect, random
 import hashlib
 
 from time import time
@@ -138,7 +138,7 @@ class hcaptcha:
             'hl': 'en',
             'motionData': json.dumps(self.motiondata),
             'pdc': {"s": round(datetime.now().timestamp() * 1000), "n": 0, "p": 0, "gcs": 10},
-            'n': asyncio.run(hsw(self.siteconfig['c']['req'], self.host, self.sitekey)),
+            'n': hsw(self.siteconfig['c']['req'], self.host, self.sitekey),
             'c': json.dumps(self.siteconfig['c']),
             'pst': False,
         }
@@ -162,7 +162,7 @@ class hcaptcha:
             'extraData': self.captcha1,
             'motionData': json.dumps(self.motiondata),
             'pdc': {"s": round(datetime.now().timestamp() * 1000), "n": 0, "p": 0, "gcs": 10},
-            'n': asyncio.run(hsw(self.captcha1['c']['req'], self.host, self.sitekey)),
+            'n': hsw(self.captcha1['c']['req'], self.host, self.sitekey),
             'c': json.dumps(self.captcha1['c']),
             'pst': False,
         }
@@ -301,7 +301,7 @@ class hcaptcha:
             answers = {key: value for key, value in results}
             
             hsw_start = time()
-            n_token = asyncio.run(hsw(cap['c']['req'], self.host, self.sitekey))
+            n_token = hsw(cap['c']['req'], self.host, self.sitekey)
             logger.info(f"checkcaptcha HSW", start_time=hsw_start, end_time=time())
 
             submit = self.session.post(
