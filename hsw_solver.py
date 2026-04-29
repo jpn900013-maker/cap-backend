@@ -119,7 +119,7 @@ async def _hsw_impl(req: str, site: str, sitekey: str) -> str:
             raise e
 
 
-async def hsw(req: str, site: str, sitekey: str) -> str:
+def hsw(req: str, site: str, sitekey: str) -> str:
     """Compute hCaptcha HSW proof-of-work token.
     
     Thread-safe: dispatches to a dedicated event loop so multiple solver
