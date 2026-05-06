@@ -1,3 +1,6 @@
+[variables]
+PLAYWRIGHT_BROWSERS_PATH = "0"
+
 [phases.build]
 cmds = [
     "python -m pip install -r requirements.txt",
