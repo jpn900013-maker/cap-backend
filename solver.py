@@ -106,12 +106,35 @@ class hcaptcha:
         self.session.headers = self.headers
         
         if proxy:
-            parts = proxy.split(":")
-            if len(parts) == 4:
-                ip, port, user, pwd = parts
-                formatted_proxy = f"http://{user}:{pwd}@{ip}:{port}"
+            # Universal proxy parser: handles all common formats
+            # 1. user:pass@host:port
+            # 2. host:port:user:pass  
+            # 3. socks5://user:pass@host:port
+            # 4. http://user:pass@host:port
+            # 5. host:port (no auth)
+            
+            # Strip any protocol prefix for parsing
+            clean = proxy
+            for prefix in ('socks5://', 'socks4://', 'http://', 'https://'):
+                if clean.lower().startswith(prefix):
+                    clean = clean[len(prefix):]
+                    break
+            
+            if '@' in clean:
+                # Format: user:pass@host:port
+                auth, hostport = clean.rsplit('@', 1)
+                formatted_proxy = f"http://{auth}@{hostport}"
             else:
-                formatted_proxy = f"http://{proxy}" if not proxy.startswith("http") else proxy
+                parts = clean.split(':')
+                if len(parts) == 4:
+                    # Format: host:port:user:pass
+                    formatted_proxy = f"http://{parts[2]}:{parts[3]}@{parts[0]}:{parts[1]}"
+                elif len(parts) == 2:
+                    # Format: host:port (no auth)
+                    formatted_proxy = f"http://{clean}"
+                else:
+                    formatted_proxy = f"http://{clean}"
+            
             self.session.proxies = {"http": formatted_proxy, "https": formatted_proxy}
 
         # Motion data with matching UA (uses en-US language internally)
@@ -277,8 +300,19 @@ class hcaptcha:
                 new_char = single_digits[0]
                 ans = new_char + number[1:]
 
-        # 4. Simple arithmetic
+        # 4. Word manipulation: "Change/Replace/Convert every occurrence of X to Y in WORD"
         elif not ans:
+            word_replace = re.search(
+                r'(?:change|replace|convert|swap|substitute|switch)\s+(?:every\s+(?:occurrence|instance)\s+of\s+|all\s+(?:occurrences?|instances?)\s+of\s+|each\s+)?["\']?(\w)["\']?\s+(?:to|with|into|for)\s+["\']?(\w)["\']?\s+in\s+["\']?(\w+)["\']?',
+                full_question, re.IGNORECASE
+            )
+            if word_replace:
+                old_char, new_char, word = word_replace.group(1), word_replace.group(2), word_replace.group(3)
+                ans = word.replace(old_char, new_char)
+                logger.info(f"[REGEX-WORD] '{old_char}'->'{new_char}' in '{word}' = {ans}")
+
+        # 5. Simple arithmetic
+        if not ans:
             arith_match = re.search(r'(\d+)\s*([+\-*/×÷])\s*(\d+)', full_question)
             if arith_match:
                 a, op, b = int(arith_match.group(1)), arith_match.group(2), int(arith_match.group(3))
@@ -302,10 +336,11 @@ class hcaptcha:
                     "content": (
                         "You are solving a text captcha. Read VERY carefully.\n"
                         "RULES:\n"
-                        "- If asked to replace the last character: check if the condition is met FIRST. "
+                        "- If asked to replace/change/convert a letter in a WORD, perform the substitution and return the modified word.\n"
+                        "- If asked to replace the last character of a NUMBER: check if the condition is met FIRST. "
                         "If the last digit does NOT match the condition, return the number UNCHANGED.\n"
                         "- If asked to delete occurrences of a digit: remove ALL instances of that digit.\n"
-                        "- Respond with ONLY the final number, nothing else.\n\n"
+                        "- Respond with ONLY the final answer (word or number), nothing else.\n\n"
                         f"Question: {full_question}"
                     )
                 }],
@@ -316,7 +351,11 @@ class hcaptcha:
 
             if response:
                 response_text = response.choices[0].message.content.strip()
-                response_text = re.sub(r'[^0-9]', '', response_text)  # Keep only digits
+                # Clean: remove quotes, markdown backticks, surrounding whitespace
+                response_text = re.sub(r'^[`"\']|[`"\']$', '', response_text).strip()
+                # If the answer looks purely numeric, keep only digits
+                if re.fullmatch(r'[\d\s,]+', response_text):
+                    response_text = re.sub(r'[^0-9]', '', response_text)
                 if response_text:
                     logger.info(f"Answer (LLM):\n{response_text}")
                     self.answers[hashed_q] = response_text

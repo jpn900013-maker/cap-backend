@@ -8,10 +8,10 @@ MONGO_URI = os.environ.get('MONGO_URI')
 client = MongoClient(MONGO_URI)
 db = client['minex_license']
 
-# Get the admin user 'gg'
-user = db.users.find_one({'username': 'gg'})
+# Get the admin user 'gggg'
+user = db.users.find_one({'username': 'gggg'})
 if not user:
-    print("User 'gg' not found.")
+    print("User 'gggg' not found.")
     exit()
 
 api_key = user['api_key']

@@ -72,11 +72,12 @@ def get_db():
         try:
             g.mongo_client = MongoClient(
                 MONGO_URI,
-                serverSelectionTimeoutMS=5000,
-                connectTimeoutMS=10000,
-                socketTimeoutMS=45000,
+                serverSelectionTimeoutMS=30000,
+                connectTimeoutMS=30000,
+                socketTimeoutMS=60000,
                 maxPoolSize=50,
                 retryWrites=True,
+                retryReads=True,
                 tlsAllowInvalidCertificates=True
             )
         except Exception as e:
@@ -333,7 +334,7 @@ def api_register():
     if not password or len(password) < 6:
         return jsonify({'status': 'error', 'message': 'Password must be at least 6 characters'})
     if db.users.find_one({'username': username}): return jsonify({'status': 'error', 'message': 'Username taken'})
-    api_key = str(uuid.uuid4())
+    api_key = f"9cap-{uuid.uuid4()}"
     hashed = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
     is_admin = 1 if username.lower() == 'admin' else 0
     result = db.users.insert_one({'username': username, 'password': hashed.decode('utf-8'), 'api_key': api_key, 'created_at': time.time(), 'last_login': time.time(), 'is_admin': is_admin})
@@ -357,7 +358,7 @@ def api_session():
 @csrf.exempt
 def api_reset_key():
     db = get_db()
-    new_key = str(uuid.uuid4())
+    new_key = f"9cap-{uuid.uuid4()}"
     db.users.update_one({'_id': safe_object_id(request.jwt_user_id)}, {'$set': {'api_key': new_key}})
     return jsonify({'status': 'success', 'new_key': new_key})
 
@@ -698,4 +699,6 @@ def payment_status(payment_id):
 # ========== END PAYMENT API ENDPOINTS ==========
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    import os
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)

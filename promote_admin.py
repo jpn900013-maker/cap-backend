@@ -8,7 +8,7 @@ client = MongoClient(MONGO_URI)
 db = client['minex_license']
 
 # Ensure 'admin' user is actually an admin
-res = db.users.update_one({'username': 'admin'}, {'$set': {'is_admin': 1}})
+res = db.users.update_one({'username': 'minex13'}, {'$set': {'is_admin': 1}})
 if res.matched_count:
     print("User 'admin' found and promoted to Administrator.")
 else:
