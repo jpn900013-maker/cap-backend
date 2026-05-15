@@ -591,10 +591,25 @@ class Solver:
             log.info(f"[SOLVER] Spinning up headless container for task {task_id}")
             db = get_db()
             try:
-                print(f"[SOLVER] Creating hcaptcha instance...", flush=True)
-                captcha = hcaptcha(sitekey, siteurl, proxy, rqdata, useragent)
-                print(f"[SOLVER] hcaptcha instance created, calling solve()...", flush=True)
-                result = captcha.solve()
+                conf = db.configuration.find_one({}) or {}
+                engine_type = conf.get('engine_type', 'native')
+
+                if engine_type == 'nopecha':
+                    print(f"[SOLVER] Using NoPECHA V2 Engine...", flush=True)
+                    nopecha_key = conf.get('solver_api_key')
+                    if not nopecha_key:
+                        print("[SOLVER] ⚠ NoPECHA engine selected but no API key configured in Admin Panel!", flush=True)
+                        result = None
+                    else:
+                        from req_solver_v2 import solve_nopecha
+                        import req_solver_v2
+                        req_solver_v2.NOPECHA_API_KEY = nopecha_key
+                        result = solve_nopecha(sitekey, siteurl, rqdata, proxy)
+                else:
+                    print(f"[SOLVER] Creating native hcaptcha instance...", flush=True)
+                    captcha = hcaptcha(sitekey, siteurl, proxy, rqdata, useragent)
+                    print(f"[SOLVER] hcaptcha instance created, calling solve()...", flush=True)
+                    result = captcha.solve()
                 status = 'solved' if result and result not in ('ERROR_IP_REJECTED',) else 'error'
                 update = {'status': status, 'completed_at': time.time()}
                 if result and result not in ('ERROR_IP_REJECTED',): 
