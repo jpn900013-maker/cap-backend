@@ -3,7 +3,7 @@ import json
 import time
 import requests
 
-CLOUD_V2_API_KEY = "sub_1TRsxQCRwBwvt6ptak6IPEDg" # Set this to a real Cloud V2 API Key to test
+CLOUD_V2_API_KEY = "" # Dynamically injected by server.py from Admin Panel
 
 def get_v2_balance(api_key):
     try:
