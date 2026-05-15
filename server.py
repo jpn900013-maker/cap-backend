@@ -625,9 +625,9 @@ class Solver:
                         db.transactions.insert_one({'user_id': user['_id'], 'amount': -cost, 'type': 'debit', 'description': f'Task: {task_type}', 'created_at': time.time()})
                     increment_api_key_usage(self.api_key, task_type)
                 elif result == 'ERROR_IP_REJECTED':
-                    log.warning(f"[SOLVER] IP/Proxy rejected by hCaptcha for task {task_id} — answers correct but proof-of-work flagged")
+                    log.warning(f"[SOLVER] IP/Proxy rejected by hCaptcha for task {task_id}")
                     print(f"[SOLVER] ⚠ IP REJECTED task {task_id} — hCaptcha flagged your IP/proxy. Try a different proxy or use Extension solver.", flush=True)
-                    update['error'] = 'ip-rejected: hCaptcha rejected your IP/proxy. Answers were correct but the proof-of-work was flagged. Use a residential proxy or switch to Extension solver mode.'
+                    update['error'] = 'ip-rejected: hCaptcha rejected your IP/proxy. Use a residential proxy or switch to Extension solver mode.'
                 else: 
                     log.warning(f"[SOLVER] Failed to resolve task {task_id}")
                     print(f"[SOLVER] ✗ FAILED task {task_id} — solver returned None", flush=True)
