@@ -591,12 +591,14 @@ class Solver:
             log.info(f"[SOLVER] Spinning up headless container for task {task_id}")
             db = get_db()
             try:
-                conf = db.configuration.find_one({}) or {}
-                engine_type = conf.get('engine_type', 'native')
+                # Read engine config from db.settings (same collection admin panel writes to)
+                engine_doc = db.settings.find_one({'key': 'engine_type'})
+                engine_type = engine_doc['value'] if engine_doc else 'native'
 
-                if engine_type == 'cloud_v2':
+                if engine_type in ('cloud_v2', 'nopecha'):
                     print(f"[SOLVER] Using Cloud V2 Engine...", flush=True)
-                    v2_key = conf.get('cloud_v2_api_key')
+                    v2_key_doc = db.settings.find_one({'key': 'cloud_v2_api_key'})
+                    v2_key = v2_key_doc['value'] if v2_key_doc else None
                     if not v2_key:
                         print("[SOLVER] ⚠ Cloud V2 engine selected but no API key configured!", flush=True)
                         result = None
@@ -1990,17 +1992,18 @@ def background_v2_balance_monitor():
         try:
             with app.app_context():
                 db = get_db()
-                conf = db.configuration.find_one({}) or {}
-                engine_type = conf.get('engine_type', 'native')
-                if engine_type == 'cloud_v2':
-                    v2_key = conf.get('cloud_v2_api_key')
+                engine_doc = db.settings.find_one({'key': 'engine_type'})
+                engine_type = engine_doc['value'] if engine_doc else 'native'
+                if engine_type in ('cloud_v2', 'nopecha'):
+                    v2_key_doc = db.settings.find_one({'key': 'cloud_v2_api_key'})
+                    v2_key = v2_key_doc['value'] if v2_key_doc else None
                     if v2_key:
                         import req_solver_v2
                         balance = req_solver_v2.get_v2_balance(v2_key)
-                        if balance <= 0.005: # threshold could be 0, but 0.005 is safer
+                        if balance <= 0.005:
                             log.warning("[MONITOR] Cloud V2 balance critical. Auto-falling back to Native engine.")
                             print(f"[MONITOR] ⚠ Cloud V2 Balance {balance} <= 0.005! Switching engine to native.", flush=True)
-                            db.configuration.update_one({}, {'$set': {'engine_type': 'native'}})
+                            db.settings.update_one({'key': 'engine_type'}, {'$set': {'value': 'native', 'updated_at': time.time()}}, upsert=True)
         except Exception as e:
             print(f"[MONITOR] Exception in v2 balance monitor: {e}")
         time.sleep(60)
