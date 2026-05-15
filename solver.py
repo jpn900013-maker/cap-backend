@@ -516,6 +516,15 @@ class hcaptcha:
                 logger.info(f"Solved hCaptcha in {elapsed}s — {token[:60]}...")
                 return token
 
+            # Detect IP/proxy rejection vs generic failure
+            try:
+                resp_json = submit.json()
+                if resp_json.get('pass') is False:
+                    logger.critical(f"IP/Proxy rejected by hCaptcha in {elapsed}s (pass:false) — answers were correct but proof-of-work was flagged")
+                    return "ERROR_IP_REJECTED"
+            except Exception:
+                pass
+
             logger.critical(f"Failed in {elapsed}s: {submit.text[:200]}")
             return None
         except Exception as e:

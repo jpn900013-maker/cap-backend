@@ -595,9 +595,9 @@ class Solver:
                 captcha = hcaptcha(sitekey, siteurl, proxy, rqdata, useragent)
                 print(f"[SOLVER] hcaptcha instance created, calling solve()...", flush=True)
                 result = captcha.solve()
-                status = 'solved' if result else 'error'
+                status = 'solved' if result and result not in ('ERROR_IP_REJECTED',) else 'error'
                 update = {'status': status, 'completed_at': time.time()}
-                if result: 
+                if result and result not in ('ERROR_IP_REJECTED',): 
                     log.info(f"[SOLVER] Successfully solved task {task_id}")
                     print(f"[SOLVER] ✓ SOLVED task {task_id} — token={result[:40]}...", flush=True)
                     update['solution'] = result
@@ -609,6 +609,10 @@ class Solver:
                         db.balance.update_one({'user_id': user['_id']}, {'$inc': {'amount': -cost}, '$set': {'last_updated': time.time()}})
                         db.transactions.insert_one({'user_id': user['_id'], 'amount': -cost, 'type': 'debit', 'description': f'Task: {task_type}', 'created_at': time.time()})
                     increment_api_key_usage(self.api_key, task_type)
+                elif result == 'ERROR_IP_REJECTED':
+                    log.warning(f"[SOLVER] IP/Proxy rejected by hCaptcha for task {task_id} — answers correct but proof-of-work flagged")
+                    print(f"[SOLVER] ⚠ IP REJECTED task {task_id} — hCaptcha flagged your IP/proxy. Try a different proxy or use Extension solver.", flush=True)
+                    update['error'] = 'ip-rejected: hCaptcha rejected your IP/proxy. Answers were correct but the proof-of-work was flagged. Use a residential proxy or switch to Extension solver mode.'
                 else: 
                     log.warning(f"[SOLVER] Failed to resolve task {task_id}")
                     print(f"[SOLVER] ✗ FAILED task {task_id} — solver returned None", flush=True)
