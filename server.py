@@ -594,17 +594,17 @@ class Solver:
                 conf = db.configuration.find_one({}) or {}
                 engine_type = conf.get('engine_type', 'native')
 
-                if engine_type == 'nopecha':
-                    print(f"[SOLVER] Using NoPECHA V2 Engine...", flush=True)
-                    nopecha_key = conf.get('solver_api_key')
-                    if not nopecha_key:
-                        print("[SOLVER] ⚠ NoPECHA engine selected but no API key configured in Admin Panel!", flush=True)
+                if engine_type == 'cloud_v2':
+                    print(f"[SOLVER] Using Cloud V2 Engine...", flush=True)
+                    v2_key = conf.get('cloud_v2_api_key')
+                    if not v2_key:
+                        print("[SOLVER] ⚠ Cloud V2 engine selected but no API key configured!", flush=True)
                         result = None
                     else:
-                        from req_solver_v2 import solve_nopecha
+                        from req_solver_v2 import solve_cloud_v2
                         import req_solver_v2
-                        req_solver_v2.NOPECHA_API_KEY = nopecha_key
-                        result = solve_nopecha(sitekey, siteurl, rqdata, proxy)
+                        req_solver_v2.CLOUD_V2_API_KEY = v2_key
+                        result = solve_cloud_v2(sitekey, siteurl, rqdata, proxy)
                 else:
                     print(f"[SOLVER] Creating native hcaptcha instance...", flush=True)
                     captcha = hcaptcha(sitekey, siteurl, proxy, rqdata, useragent)
@@ -1982,6 +1982,30 @@ def ext_proxy_recognition(captcha_type):
         return jsonify({'error': -1, 'message': 'Backend proxy error'}), 502
 
 # ========== END EXTENSION KEY EXCHANGE ==========
+
+import threading
+
+def background_v2_balance_monitor():
+    while True:
+        try:
+            with app.app_context():
+                db = get_db()
+                conf = db.configuration.find_one({}) or {}
+                engine_type = conf.get('engine_type', 'native')
+                if engine_type == 'cloud_v2':
+                    v2_key = conf.get('cloud_v2_api_key')
+                    if v2_key:
+                        import req_solver_v2
+                        balance = req_solver_v2.get_v2_balance(v2_key)
+                        if balance <= 0.005: # threshold could be 0, but 0.005 is safer
+                            log.warning("[MONITOR] Cloud V2 balance critical. Auto-falling back to Native engine.")
+                            print(f"[MONITOR] ⚠ Cloud V2 Balance {balance} <= 0.005! Switching engine to native.", flush=True)
+                            db.configuration.update_one({}, {'$set': {'engine_type': 'native'}})
+        except Exception as e:
+            print(f"[MONITOR] Exception in v2 balance monitor: {e}")
+        time.sleep(60)
+
+threading.Thread(target=background_v2_balance_monitor, daemon=True).start()
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
