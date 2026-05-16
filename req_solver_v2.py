@@ -14,7 +14,7 @@ def get_v2_balance(api_key):
     except: pass
     return 0.0
 
-def solve_cloud_v2(sitekey, url, rqdata, proxy=None):
+def solve_cloud_v2(sitekey, url, rqdata, proxy=None, useragent=None):
     """
     Solves hCaptcha using the Cloud V2 Token API.
     Does not require a proxy, as it solves it on their cloud, but you can pass one.
@@ -55,6 +55,10 @@ def solve_cloud_v2(sitekey, url, rqdata, proxy=None):
                 
         payload["data"]["proxy"] = formatted_proxy
         print(f"[*] Attaching Proxy to V2 Payload: {formatted_proxy}")
+
+    if useragent:
+        payload["data"]["useragent"] = useragent
+        print(f"[*] Attaching User-Agent to V2 Payload: {useragent[:40]}...")
     
     # Let's send the job request
     print("[*] Submitting job to cloud V2 API...")

@@ -613,7 +613,7 @@ class Solver:
                         result = None
                         for single_v2_key in [k.strip() for k in v2_key.split(',') if k.strip()]:
                             req_solver_v2.CLOUD_V2_API_KEY = single_v2_key
-                            result = solve_cloud_v2(sitekey, siteurl, rqdata, proxy)
+                            result = solve_cloud_v2(sitekey, siteurl, rqdata, proxy, useragent)
                             if result != 'RATE_LIMIT': # We will change req_solver_v2 to return 'RATE_LIMIT'
                                 break
                             print(f"[SOLVER] Key {single_v2_key[:10]}... rate limited. Rotating...", flush=True)
