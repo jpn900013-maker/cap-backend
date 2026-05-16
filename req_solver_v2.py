@@ -21,15 +21,40 @@ def solve_cloud_v2(sitekey, url, rqdata, proxy=None):
     """
     print(f"[*] Starting Cloud V2 API solve for {sitekey} on {url}")
     
+    if not url.startswith('http'):
+        url = 'https://' + url
+
     payload = {
         "key": CLOUD_V2_API_KEY,
         "type": "hcaptcha",
         "sitekey": sitekey,
         "url": url,
         "data": {
-            "rqdata": rqdata
         }
     }
+    
+    if proxy:
+        # Standardize proxy format to what Nopecha accepts
+        clean = proxy
+        for prefix in ('socks5://', 'socks4://', 'http://', 'https://'):
+            if clean.lower().startswith(prefix):
+                clean = clean[len(prefix):]
+                break
+        
+        if '@' in clean:
+            # Format: user:pass@host:port
+            auth, hostport = clean.rsplit('@', 1)
+            formatted_proxy = f"http://{auth}@{hostport}"
+        else:
+            parts = clean.split(':')
+            if len(parts) == 4:
+                # Format: host:port:user:pass
+                formatted_proxy = f"http://{parts[2]}:{parts[3]}@{parts[0]}:{parts[1]}"
+            else:
+                formatted_proxy = f"http://{clean}"
+                
+        payload["data"]["proxy"] = formatted_proxy
+        print(f"[*] Attaching Proxy to V2 Payload: {formatted_proxy}")
     
     # Let's send the job request
     print("[*] Submitting job to cloud V2 API...")
