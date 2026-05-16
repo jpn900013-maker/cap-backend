@@ -2034,17 +2034,20 @@ def background_v2_balance_monitor():
                 engine_type = engine_doc['value'] if engine_doc else 'native'
                 if engine_type in ('cloud_v2', 'nopecha'):
                     v2_key_doc = db.settings.find_one({'key': 'cloud_v2_api_key'})
-                    v2_key = v2_key_doc['value'] if v2_key_doc else None
-                    if v2_key:
+                    v2_keys_str = v2_key_doc['value'] if v2_key_doc else None
+                    if v2_keys_str:
                         import req_solver_v2
-                        balance = req_solver_v2.get_v2_balance(v2_key)
-                        if balance <= 0.005:
+                        total_balance = 0.0
+                        for v2_key in [k.strip() for k in v2_keys_str.split(',') if k.strip()]:
+                            total_balance += float(max(0, req_solver_v2.get_v2_balance(v2_key)))
+                            
+                        if total_balance <= 0.005:
                             log.warning("[MONITOR] Cloud V2 balance critical. Auto-falling back to Native engine.")
-                            print(f"[MONITOR] ⚠ Cloud V2 Balance {balance} <= 0.005! Switching engine to native.", flush=True)
+                            print(f"[MONITOR] ⚠ Cloud V2 Total Balance {total_balance} <= 0.005! Switching engine to native.", flush=True)
                             db.settings.update_one({'key': 'engine_type'}, {'$set': {'value': 'native', 'updated_at': time.time()}}, upsert=True)
         except Exception as e:
             print(f"[MONITOR] Exception in v2 balance monitor: {e}")
-        time.sleep(60)
+        time.sleep(30)
 
 threading.Thread(target=background_v2_balance_monitor, daemon=True).start()
 
