@@ -14,6 +14,7 @@ from solver import hcaptcha
 import threading
 from flask_wtf.csrf import CSRFProtect
 from pymongo import MongoClient
+from pymongo.errors import PyMongoError
 from bson.objectid import ObjectId
 import math
 from datetime import datetime
@@ -551,8 +552,11 @@ def validate_api_key(api_key):
     if not api_key.startswith('9cap'):
         return False, "Invalid API key format. Must start with '9cap'"
     db = get_db()
-    user = db.users.find_one({'api_key': api_key})
-    return (True, "Valid") if user else (False, "Invalid API key")
+    try:
+        user = db.users.find_one({'api_key': api_key})
+        return (True, "Valid") if user else (False, "Invalid API key")
+    except PyMongoError:
+        return False, "Database connection timeout, please try again"
 
 def get_task_cost(task_type):
     db = get_db()
@@ -605,8 +609,17 @@ class Solver:
                     else:
                         from req_solver_v2 import solve_cloud_v2
                         import req_solver_v2
-                        req_solver_v2.CLOUD_V2_API_KEY = v2_key
-                        result = solve_cloud_v2(sitekey, siteurl, rqdata, proxy)
+                        
+                        result = None
+                        for single_v2_key in [k.strip() for k in v2_key.split(',') if k.strip()]:
+                            req_solver_v2.CLOUD_V2_API_KEY = single_v2_key
+                            result = solve_cloud_v2(sitekey, siteurl, rqdata, proxy)
+                            if result != 'RATE_LIMIT': # We will change req_solver_v2 to return 'RATE_LIMIT'
+                                break
+                            print(f"[SOLVER] Key {single_v2_key[:10]}... rate limited. Rotating...", flush=True)
+                        
+                        if result == 'RATE_LIMIT':
+                            result = None # Exhausted all keys
                 else:
                     print(f"[SOLVER] Creating native hcaptcha instance...", flush=True)
                     captcha = hcaptcha(sitekey, siteurl, proxy, rqdata, useragent)
@@ -645,10 +658,13 @@ class Solver:
 
     def get_task_solution(self, task_id):
         db = get_db()
-        task = db.tasks.find_one({'task_id': task_id})
-        if not task: return "not_found", None
-        if task['api_key'] != self.api_key: return "unauthorized", None
-        return task['status'], task.get('solution') if task['status'] == 'solved' else task.get('error')
+        try:
+            task = db.tasks.find_one({'task_id': task_id})
+            if not task: return "not_found", None
+            if task['api_key'] != self.api_key: return "unauthorized", None
+            return task['status'], task.get('solution') if task['status'] == 'solved' else task.get('error')
+        except PyMongoError:
+            return "solving", None # Soft fail so clients retry
 
 @app.route('/captcha/api/create_task', methods=['POST'])
 @csrf.exempt
@@ -675,11 +691,14 @@ def get_result(task_id):
     log.info(f"[REQ] External polling request for task {task_id}")
     
     if status == 'solving':
-        db = get_db()
-        task = db.tasks.find_one({'task_id': task_id})
-        if task and (time.time() - task.get('created_at', 0)) > 120:
-            db.tasks.update_one({'task_id': task_id}, {'$set': {'status': 'error', 'error': 'Solver timeout - task took too long', 'completed_at': time.time()}})
-            return jsonify({"status": "error", "error": "Solver timeout - task took too long"})
+        try:
+            db = get_db()
+            task = db.tasks.find_one({'task_id': task_id})
+            if task and (time.time() - task.get('created_at', 0)) > 120:
+                db.tasks.update_one({'task_id': task_id}, {'$set': {'status': 'error', 'error': 'Solver timeout - task took too long', 'completed_at': time.time()}})
+                return jsonify({"status": "error", "error": "Solver timeout - task took too long"})
+        except PyMongoError:
+            pass # Soft fail, let the client receive 'solving' and try again later
     
     return jsonify({"status": status, "solution": result} if status == 'solved' else {"status": status, "error": result})
 
@@ -904,9 +923,9 @@ def _get_solver_key():
     try:
         db = get_db()
         settings = db.admin_settings.find_one({'key': 'solver_api_key'})
-        return settings['value'] if settings else 't7tz6we5y31rxaeq'
+        return [k.strip() for k in settings['value'].split(',') if k.strip()] if settings else ['t7tz6we5y31rxaeq']
     except Exception:
-        return 't7tz6we5y31rxaeq'
+        return ['t7tz6we5y31rxaeq']
 
 @app.route('/captcha/api/ext/v1/recognition/<captcha_type>', methods=['POST'])
 @csrf.exempt
@@ -925,27 +944,39 @@ def ext_recognition(captcha_type):
     if not balance_doc or balance_doc['amount'] < cost:
         return jsonify({'error': 17, 'message': 'Insufficient balance'}), 402
 
-    solver_key = _get_solver_key()
-    if not solver_key:
+    solver_keys = _get_solver_key()
+    if not solver_keys:
         return jsonify({'error': 16, 'message': 'Solver not configured. Contact admin.'}), 503
 
     # Forward the request to the real solver API
     try:
         payload = request.get_json(force=True, silent=True) or {}
-        payload['key'] = solver_key  # Replace user's key with the real key
-
-        headers = {
-            'accept': 'application/json',
-            'content-type': 'application/json',
-            'authorization': f'Basic {solver_key}'
-        }
-        resp = requests.post(
-            f'https://api.nopecha.com/v1/recognition/{captcha_type}',
-            json=payload, headers=headers, timeout=30
-        )
-        log.info(f'[EXT-PROXY] Recognition/{captcha_type} -> {resp.status_code}')
         
-        rj = resp.json()
+        rj = None
+        resp_status = 500
+        for solver_key in solver_keys:
+            payload['key'] = solver_key  # Replace user's key with the real key
+
+            headers = {
+                'accept': 'application/json',
+                'content-type': 'application/json',
+                'authorization': f'Basic {solver_key}'
+            }
+            resp = requests.post(
+                f'https://api.nopecha.com/v1/recognition/{captcha_type}',
+                json=payload, headers=headers, timeout=30
+            )
+            log.info(f'[EXT-PROXY] Recognition/{captcha_type} -> {resp.status_code}')
+            
+            rj = resp.json()
+            resp_status = resp.status_code
+            
+            if type(rj) == dict and rj.get('error') == 11:
+                log.info(f'[EXT-PROXY] Key {solver_key[:10]} rate limited. Rotating...')
+                continue
+            
+            break # Success or non-ratelimit error
+
         if type(rj) == dict and rj.get('error') == 0:
             if isinstance(rj.get('data'), list):
                 # Solved immediately (e.g text captcha)
@@ -971,22 +1002,29 @@ def ext_recognition_poll(captcha_type):
     if not is_valid:
         return jsonify({'error': 1, 'message': 'Invalid 9Captcha API Key'}), 401
 
-    solver_key = _get_solver_key()
-    if not solver_key:
+    solver_keys = _get_solver_key()
+    if not solver_keys:
         return jsonify({'error': 16, 'message': 'Solver not configured'}), 503
 
     try:
         task_id = request.args.get('id', '')
-        headers = {
-            'accept': 'application/json',
-            'authorization': f'Basic {solver_key}'
-        }
-        resp = requests.get(
-            f'https://api.nopecha.com/v1/recognition/{captcha_type}?id={task_id}&key={solver_key}',
-            headers=headers, timeout=30
-        )
         
-        rj = resp.json()
+        rj = None
+        for solver_key in solver_keys:
+            headers = {
+                'accept': 'application/json',
+                'authorization': f'Basic {solver_key}'
+            }
+            resp = requests.get(
+                f'https://api.nopecha.com/v1/recognition/{captcha_type}?id={task_id}&key={solver_key}',
+                headers=headers, timeout=30
+            )
+            
+            rj = resp.json()
+            if type(rj) == dict and rj.get('error') == 11:
+                continue # Rate limit, try next
+            break
+
         if type(rj) == dict and rj.get('error') == 0 and isinstance(rj.get('data'), list):
             db = get_db()
             task = db.ext_tasks.find_one({'task_id': task_id})

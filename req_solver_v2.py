@@ -40,6 +40,8 @@ def solve_cloud_v2(sitekey, url, rqdata, proxy=None):
         
         if "error" in res_data and res_data["error"] != 0:
             print(f"[-] Cloud V2 API Error: {res_data['message']}")
+            if res_data["error"] == 11:
+                return 'RATE_LIMIT'
             return None
             
         data = res_data.get("data")
@@ -70,6 +72,8 @@ def solve_cloud_v2(sitekey, url, rqdata, proxy=None):
                 if poll_data["error"] == 14: # Incomplete
                     continue
                 print(f"[-] Polling Error: {poll_data}")
+                if poll_data["error"] == 11:
+                    return 'RATE_LIMIT'
                 return None
                 
             if "data" in poll_data and poll_data["data"]:

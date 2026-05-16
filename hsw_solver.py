@@ -74,8 +74,7 @@ async def _ensure_page():
         context = await _browser.new_context()
         _page = await context.new_page()
         await _page.route("**/*", lambda r: r.fulfill(status=200, content_type="text/html", body="<html></html>"))
-        await _page.goto("about:blank")
-        await _page.wait_for_load_state('domcontentloaded')
+        await _page.goto("https://discord.com/register", timeout=10000, wait_until="commit")
         # Patch webdriver detection
         await _page.add_script_tag(content='Object.defineProperty(navigator, "webdriver", {"get": () => false})')
         _current_hsw_url = None
