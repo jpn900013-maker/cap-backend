@@ -511,6 +511,9 @@ class hcaptcha:
                 if resp_json.get('pass') is False:
                     logger.critical(f"IP/Proxy rejected by hCaptcha in {elapsed}s (pass:false) — answers were correct but proof-of-work was flagged")
                     return "ERROR_IP_REJECTED"
+                if resp_json.get('error') == "rate-limit-exceeded":
+                    logger.critical(f"Failed in {elapsed}s: rate-limit-exceeded")
+                    return "ERROR_RATELIMIT"
             except Exception:
                 pass
 

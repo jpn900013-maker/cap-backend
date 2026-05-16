@@ -631,9 +631,9 @@ class Solver:
                     captcha = hcaptcha(sitekey, siteurl, proxy, rqdata, useragent)
                     print(f"[SOLVER] hcaptcha instance created, calling solve()...", flush=True)
                     result = captcha.solve()
-                status = 'solved' if result and result not in ('ERROR_IP_REJECTED',) else 'error'
+                status = 'solved' if result and result not in ('ERROR_IP_REJECTED', 'ERROR_RATELIMIT') else 'error'
                 update = {'status': status, 'completed_at': time.time()}
-                if result and result not in ('ERROR_IP_REJECTED',): 
+                if result and result not in ('ERROR_IP_REJECTED', 'ERROR_RATELIMIT'): 
                     log.info(f"[SOLVER] Successfully solved task {task_id}")
                     print(f"[SOLVER] ✓ SOLVED task {task_id} — token={result[:40]}...", flush=True)
                     update['solution'] = result
@@ -649,6 +649,10 @@ class Solver:
                     log.warning(f"[SOLVER] IP/Proxy rejected by hCaptcha for task {task_id}")
                     print(f"[SOLVER] ⚠ IP REJECTED task {task_id} — hCaptcha flagged your IP/proxy. Try a different proxy or use Extension solver.", flush=True)
                     update['error'] = 'ip-rejected: hCaptcha rejected your IP/proxy. Use a residential proxy or switch to Extension solver mode.'
+                elif result == 'ERROR_RATELIMIT':
+                    log.warning(f"[SOLVER] Rate limited by hCaptcha for task {task_id}")
+                    print(f"[SOLVER] ⚠ RATE LIMITED task {task_id} — IP is getting too many requests.", flush=True)
+                    update['error'] = 'rate-limit-exceeded'
                 else: 
                     log.warning(f"[SOLVER] Failed to resolve task {task_id}")
                     print(f"[SOLVER] ✗ FAILED task {task_id} — solver returned None", flush=True)
