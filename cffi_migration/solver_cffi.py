@@ -1,0 +1,528 @@
+from curl_cffi import requests as cffi_requests
+import re, json, inspect, random
+import hashlib
+
+from time import time
+from groq import Groq
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+
+def _tls_timeout(seconds=60):
+    return {"timeout": seconds}
+
+from logger import logger
+from hsw_solver_cffi import hsw
+from motion import motion_data
+
+# Chrome-only desktop UAs that match chrome_120 TLS fingerprint.
+# Tuples: (user_agent_string, chrome_major_version, platform_for_sec_ch_ua)
+# ALL UAs must be Chrome/120 to exactly match the chrome_120 TLS fingerprint.
+# Mixing versions (119, 121, 122) creates a detectable JA3 vs UA mismatch.
+CHROME_USER_AGENTS = [
+    ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", "120", "Windows"),
+    ("Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", "120", "Windows"),
+    ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.225 Safari/537.36", "120", "Windows"),
+    ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.130 Safari/537.36", "120", "Windows"),
+    ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", "120", "macOS"),
+    ("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", "120", "macOS"),
+    ("Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", "120", "macOS"),
+    ("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", "120", "macOS"),
+    ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", "120", "Linux"),
+]
+
+
+def _detect_platform(ua: str) -> str:
+    """Detect OS platform from a User-Agent string for sec-ch-ua-platform."""
+    if 'Macintosh' in ua or 'Mac OS X' in ua:
+        return 'macOS'
+    elif 'Linux' in ua:
+        return 'Linux'
+    return 'Windows'
+
+
+# Lazy hCaptcha version fetch — deferred to first solve, not import time
+_init_session = cffi_requests.Session(impersonate="chrome120")
+_init_session.headers = {
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+}
+version = None
+
+def _get_version():
+    global version
+    if version is None:
+        api_js = _init_session.get('https://hcaptcha.com/1/api.js?render=explicit&onload=hcaptchaOnLoad').text
+        version = re.findall(r'v1\/([A-Za-z0-9]+)\/static', api_js)[1]
+        logger.info(f"Fetched hCaptcha version: {version}")
+    return version
+
+import os
+from dotenv import load_dotenv
+load_dotenv('config.env')
+
+_groq_client = None
+
+def _get_groq():
+    global _groq_client
+    if _groq_client is None:
+        _groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+    return _groq_client
+
+
+def _build_headers(ua: str, chrome_ver: str, platform: str) -> dict:
+    """Build a fully consistent Chrome header set.
+    
+    Matches: TLS fingerprint (chrome_120) ↔ sec-ch-ua ↔ sec-ch-ua-platform ↔ User-Agent ↔ accept-language
+    """
+    return {
+        'sec-ch-ua-platform': f'"{platform}"',
+        'user-agent': ua,
+        'accept': 'application/json',
+        'sec-ch-ua': f'"Not_A Brand";v="8", "Chromium";v="{chrome_ver}", "Google Chrome";v="{chrome_ver}"',
+        'sec-ch-ua-mobile': '?0',
+        'origin': 'https://newassets.hcaptcha.com',
+        'sec-fetch-site': 'same-site',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-dest': 'empty',
+        'referer': 'https://newassets.hcaptcha.com/',
+        'accept-encoding': 'gzip, deflate, br',
+        'accept-language': 'en-US,en;q=0.9',
+    }
+
+
+class hcaptcha:
+    def __init__(self, sitekey: str, host: str, proxy: str = None, rqdata: str = None, useragent: str = None) -> None:
+        self.solve_start = time()
+        logger.info(f"Solving for: {sitekey} - {host}")
+        self.sitekey = sitekey
+        self.host = host.split("//")[-1].split("/")[0]
+        self.rqdata = rqdata
+
+        # Pick UA: client-provided or random Chrome UA
+        if useragent:
+            ua = useragent
+            m = re.search(r'Chrome/(\d+)', ua)
+            chrome_ver = m.group(1) if m else "120"
+            platform = _detect_platform(ua)
+        else:
+            ua, chrome_ver, platform = random.choice(CHROME_USER_AGENTS)
+
+        self.ua = ua
+        self.chrome_ver = chrome_ver
+        self.platform = platform
+        self.headers = _build_headers(ua, chrome_ver, platform)
+
+        # Per-solve session — thread safe, no shared state
+        self.session = cffi_requests.Session(impersonate="chrome120")
+        self.session.headers = self.headers
+        
+        if proxy:
+            logger.info(f"[PROXY] Received proxy from client: {proxy}")
+            # Universal proxy parser: handles all common formats
+            # 1. user:pass@host:port
+            # 2. host:port:user:pass  
+            # 3. socks5://user:pass@host:port
+            # 4. http://user:pass@host:port
+            # 5. host:port (no auth)
+            
+            # Strip any protocol prefix for parsing
+            clean = proxy
+            for prefix in ('socks5://', 'socks4://', 'http://', 'https://'):
+                if clean.lower().startswith(prefix):
+                    clean = clean[len(prefix):]
+                    break
+            
+            if '@' in clean:
+                # Format: user:pass@host:port
+                auth, hostport = clean.rsplit('@', 1)
+                formatted_proxy = f"http://{auth}@{hostport}"
+            else:
+                parts = clean.split(':')
+                if len(parts) == 4:
+                    # Format: host:port:user:pass
+                    formatted_proxy = f"http://{parts[2]}:{parts[3]}@{parts[0]}:{parts[1]}"
+                elif len(parts) == 2:
+                    # Format: host:port (no auth)
+                    formatted_proxy = f"http://{clean}"
+                else:
+                    formatted_proxy = f"http://{clean}"
+            
+            logger.info(f"[PROXY] Using formatted proxy: {formatted_proxy}")
+            self.session.proxies = {"http": formatted_proxy, "https": formatted_proxy}
+        else:
+            logger.warning("[PROXY] No proxy provided — solver will use VPS IP!")
+
+        # Motion data with matching UA (uses en-US language internally)
+        self.motion = motion_data(ua, f"https://{self.host}")
+        self.motiondata = self.motion.get_captcha()
+
+        self.siteconfig = self.get_siteconfig()
+        self.captcha1 = self.get_captcha1()
+
+        self.pass_token = None
+        if 'generated_pass_UUID' in self.captcha1:
+            self.pass_token = self.captcha1['generated_pass_UUID']
+            self.captcha2 = None
+        elif 'key' not in self.captcha1:
+            logger.critical(f"captcha1 missing 'key'. Response: {json.dumps(self.captcha1)[:300]}")
+            raise Exception(f"captcha1 error: {json.dumps(self.captcha1)[:200]}")
+        else:
+            self.captcha2 = self.get_captcha2()
+
+        self.answers = {}
+
+    def get_siteconfig(self) -> dict:
+        s = time()
+        siteconfig = self.session.post("https://api2.hcaptcha.com/checksiteconfig", params={
+            'v': _get_version(),
+            'sitekey': self.sitekey,
+            'host': self.host,
+            'sc': '1',
+            'swa': '1',
+            'spst': '1',
+        }, **_tls_timeout(60))
+        logger.info(f"checksiteconfig [took {round(time() - s, 2)}s]")
+        return siteconfig.json()
+
+    def get_captcha1(self) -> dict:
+        s = time()
+        data = {
+            'v': _get_version(),
+            'sitekey': self.sitekey,
+            'host': self.host,
+            'hl': 'en',
+            'motionData': json.dumps(self.motiondata),
+            'pdc': {"s": round(datetime.now().timestamp() * 1000), "n": 0, "p": 0, "gcs": 10},
+            'n': hsw(self.siteconfig['c']['req'], self.host, self.sitekey, self.ua),
+            'c': json.dumps(self.siteconfig['c']),
+            'pst': False,
+        }
+        if self.rqdata is not None:
+            data['rqdata'] = self.rqdata
+
+        getcaptcha = self.session.post(f"https://api.hcaptcha.com/getcaptcha/{self.sitekey}", data=data, **_tls_timeout(60))
+        logger.info(f"getcaptcha1 [took {round(time() - s, 2)}s]")
+        return getcaptcha.json()
+
+    def get_captcha2(self) -> dict:
+        s = time()
+        data = {
+            'v': _get_version(),
+            'sitekey': self.sitekey,
+            'host': self.host,
+            'hl': 'en',
+            'a11y_tfe': 'true',
+            'action': 'challenge-refresh',
+            'old_ekey': self.captcha1['key'],
+            'extraData': self.captcha1,
+            'motionData': json.dumps(self.motiondata),
+            'pdc': {"s": round(datetime.now().timestamp() * 1000), "n": 0, "p": 0, "gcs": 10},
+            'n': hsw(self.captcha1['c']['req'], self.host, self.sitekey, self.ua),
+            'c': json.dumps(self.captcha1['c']),
+            'pst': False,
+        }
+        if self.rqdata is not None:
+            data['rqdata'] = self.rqdata
+
+        getcaptcha2 = self.session.post(f"https://api.hcaptcha.com/getcaptcha/{self.sitekey}", data=data, **_tls_timeout(60))
+        logger.info(f"getcaptcha2 [took {round(time() - s, 2)}s]")
+        return getcaptcha2.json()
+
+    def text(self, task: dict) -> tuple:
+        """Solve a single text captcha task. Returns (task_key, answer_dict)."""
+        s = time()
+        q = task.get("datapoint_text", {}).get("en", str(task))
+        req_q = self.captcha2.get("requester_question", {}).get("en", "")
+        full_question = q if not req_q or req_q in q else f"{req_q} {q}"
+        hashed_q = hashlib.sha1(q.encode()).hexdigest()
+        logger.info(f"question:\n{full_question}")
+
+        lower_q = full_question.lower()
+        ans = None
+
+        # ---- Native solvers (instant, no LLM needed) ----
+
+        # 0. EXTRACT Nth GROUP: "Point out the 5th group of digits in: 4686 $ 3306 * 6917 2727 \ 940"
+        #    Also matches: "Retrieve the 4th collection of numbers", "identify the 2nd collection of digits", etc.
+        if any(kw in lower_q for kw in ['group of digits', 'group of numbers', 'collection of digits', 'collection of numbers',
+                                          'set of digits', 'set of numbers', 'block of digits', 'block of numbers',
+                                          'cluster of digits', 'cluster of numbers', 'batch of digits', 'batch of numbers']):
+            # Find the ordinal (1st, 2nd, 3rd, 4th, 5th, etc.)
+            ordinal_match = re.search(r'(\d+)(?:st|nd|rd|th)', lower_q)
+            if ordinal_match:
+                idx = int(ordinal_match.group(1)) - 1  # Convert to 0-based index
+                # Extract all multi-digit numbers from the series (after the colon or question structure)
+                # Split on colon to get the series part
+                series_part = full_question.split(':')[-1] if ':' in full_question else full_question
+                # Also try splitting on "series" or "list" keywords
+                for kw in ['series:', 'list:', 'following']:
+                    if kw in full_question.lower():
+                        series_part = full_question[full_question.lower().index(kw) + len(kw):]
+                        break
+                groups = re.findall(r'\d+', series_part)
+                if groups and 0 <= idx < len(groups):
+                    ans = groups[idx]
+                    logger.info(f"[REGEX-NTH-GROUP] index={idx+1}, groups={groups}, ans={ans}")
+
+        # 1. DELETE pattern: "Delete/Remove/Lösche all occurrences of X in Y"
+        if any(kw in lower_q for kw in ['delete', 'remove', 'lösche', 'vorkommen', 'entferne']):
+            digits = re.findall(r'\d+', full_question)
+            if len(digits) >= 2:
+                # Find the single digit to delete and the number
+                single_digits = [d for d in digits if len(d) == 1]
+                numbers = [d for d in digits if len(d) >= 4]
+                if single_digits and numbers:
+                    ans = numbers[-1].replace(single_digits[0], "")
+
+        # 2. REPLACE LAST CHARACTER pattern (universal — handles ALL observed variants)
+        # Variants seen:
+        #   "Replace the last character with 3 only when the ending character is 6 in 985283"
+        #   "When the final character is 8, change only that last character to 2 in 506877"
+        #   "Only if the ending is 0, replace the last character with 8 in 631416"
+        #   "If it ends with 3, replace that final 3 with 9 in 993493"
+        #   "Ersetze das letzte Zeichen durch X wenn das Endzeichen Y ist in Z"
+        elif any(kw in lower_q for kw in ['last character', 'last digit', 'letzte', 'final character', 'final digit', 'ending character', 'ending is', 'ends with', 'endzeichen']):
+            digits = re.findall(r'\d+', full_question)
+            numbers = [d for d in digits if len(d) >= 4]
+            single_digits = [d for d in digits if len(d) == 1]
+            
+            if numbers and len(single_digits) >= 2:
+                number = numbers[-1]  # The big number to modify
+                
+                # Figure out which single digit is "replace with" and which is "condition"
+                # Strategy: find the condition digit (what the last char must be) and replacement digit
+                # Look for keywords near each digit to determine roles
+                
+                # Find positions of single digits in the text
+                replace_digit = None
+                condition_digit = None
+                
+                for sd in single_digits:
+                    # Find position of this digit in the question
+                    pos = full_question.find(sd)
+                    # Get surrounding context (30 chars before)
+                    context_before = full_question[max(0, pos-40):pos].lower()
+                    context_after = full_question[pos:pos+40].lower()
+                    
+                    if any(kw in context_before for kw in ['with', 'to', 'durch', 'zu']):
+                        replace_digit = sd
+                    elif any(kw in context_before for kw in ['is', 'ends', 'ending', 'final', 'endzeichen', 'wenn']):
+                        condition_digit = sd
+                    elif any(kw in context_after for kw in ['replace', 'change', 'ersetze', 'ändere']):
+                        condition_digit = sd
+                
+                # If we couldn't determine roles from context, use order heuristic:
+                # In most patterns, the first single digit mentioned after "with/to" is replace,
+                # and the one near "is/ends" is condition 
+                if replace_digit is None or condition_digit is None:
+                    # Fallback: try all pairs and pick the consistent one
+                    for i, sd1 in enumerate(single_digits):
+                        for j, sd2 in enumerate(single_digits):
+                            if i != j:
+                                # Try sd1=replace, sd2=condition
+                                if replace_digit is None:
+                                    replace_digit = sd1
+                                if condition_digit is None:
+                                    condition_digit = sd2
+                                break
+                        if replace_digit and condition_digit:
+                            break
+                
+                if replace_digit and condition_digit and number:
+                    if number[-1] == condition_digit:
+                        ans = number[:-1] + replace_digit
+                    else:
+                        ans = number
+                    logger.info(f"[REGEX-LAST] condition={condition_digit} replace={replace_digit} number={number} → {ans}")
+
+        # 3. REPLACE FIRST CHARACTER pattern
+        elif any(kw in lower_q for kw in ['first character', 'first digit', 'erste']):
+            digits = re.findall(r'\d+', full_question)
+            numbers = [d for d in digits if len(d) >= 4]
+            single_digits = [d for d in digits if len(d) == 1]
+            if numbers and single_digits:
+                number = numbers[-1]
+                new_char = single_digits[0]
+                ans = new_char + number[1:]
+
+        # 4. Word manipulation: "Change/Replace/Convert every occurrence of X to Y in WORD"
+        if not ans:
+            word_replace = re.search(
+                r'(?:change|replace|convert|swap|substitute|switch)\s+(?:every\s+(?:occurrence|instance)\s+of\s+|all\s+(?:occurrences?|instances?)\s+of\s+|each\s+)?["\']?(\w)["\']?\s+(?:to|with|into|for)\s+["\']?(\w)["\']?\s+in\s+(?:the\s+word\s+)?["\']?(\w+)["\']?',
+                full_question, re.IGNORECASE
+            )
+            if word_replace:
+                old_char, new_char, word = word_replace.group(1), word_replace.group(2), word_replace.group(3)
+                ans = word.replace(old_char, new_char)
+                logger.info(f"[REGEX-WORD] '{old_char}'->'{new_char}' in '{word}' = {ans}")
+
+        # 4b. "Remove all occurrences of X from WORD"
+        if not ans:
+            word_remove = re.search(r'occurrences?\s+of\s+["\']?([a-zA-Z0-9])["\']?\s+from\s+["\']?([a-zA-Z0-9]+)["\']?', full_question, re.IGNORECASE)
+            if word_remove:
+                char_to_remove, word = word_remove.group(1), word_remove.group(2)
+                ans = word.replace(char_to_remove, "")
+                logger.info(f"[REGEX-REMOVE] '{char_to_remove}' from '{word}' = {ans}")
+
+        # 4c. Multiply letter count by digit in word
+        if not ans and any(kw in lower_q for kw in ['multiply', 'letter count', 'number of letters', 'multiplying']):
+            words = re.findall(r'[a-zA-Z0-9]+', full_question)
+            if words:
+                # The target word is typically the very last word in the question
+                word = words[-1]
+                letters_only = [c for c in word if c.isalpha()]
+                digits_only = [c for c in word if c.isdigit()]
+                if digits_only and letters_only:
+                    ans = str(len(letters_only) * int(digits_only[0]))
+                    logger.info(f"[REGEX-MULT] {len(letters_only)} letters * {digits_only[0]} digit in '{word}' = {ans}")
+
+        # 5. Simple arithmetic
+        if not ans:
+            arith_match = re.search(r'(\d+)\s*([+\-*/×÷])\s*(\d+)', full_question)
+            if arith_match:
+                a, op, b = int(arith_match.group(1)), arith_match.group(2), int(arith_match.group(3))
+                if op in ('+',): ans = str(a + b)
+                elif op in ('-',): ans = str(a - b)
+                elif op in ('*', '×'): ans = str(a * b)
+                elif op in ('/', '÷'): ans = str(a // b) if b != 0 else "0"
+                else: ans = str(a + b)
+
+        # Return native answer if found
+        if ans is not None:
+            logger.info(f"Answer (native):\n{ans}")
+            self.answers[hashed_q] = ans
+            return task['task_key'], {'text': ans}
+
+        # ---- LLM fallback ----
+        try:
+            response = _get_groq().chat.completions.create(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an expert text-captcha solver. Your output is parsed by a machine — any extra text will cause failure.\n"
+                            "OUTPUT EXACTLY ONE answer: a single number, word, or short string. NO quotes, NO punctuation, NO explanation.\n\n"
+                            "MASTER RULESET — follow the FIRST matching rule:\n\n"
+                            "EXTRACTION:\n"
+                            "- 'Nth group/collection/set/block of digits/numbers in series' → extract the Nth number from the list (1-indexed)\n"
+                            "- 'largest/smallest/biggest/greatest number' → compare ALL numbers and return the max/min\n"
+                            "- 'sum/total of all numbers' → add all numbers together\n"
+                            "- 'how many numbers/digits/groups' → count them\n\n"
+                            "CHARACTER MANIPULATION:\n"
+                            "- 'Replace/change last character with X if/when/only ending is Y in NUMBER'\n"
+                            "  → Check if NUMBER ends with Y. If YES, replace last digit with X. If NO, return NUMBER unchanged.\n"
+                            "- 'Replace/change first character with X in NUMBER' → replace first digit with X\n"
+                            "- 'Delete/remove all occurrences of X in NUMBER' → remove every instance of digit X\n"
+                            "- 'Replace/change/convert/swap X to Y in WORD' → substitute all X→Y in the word\n"
+                            "- 'Remove all occurrences of X from WORD' → delete all instances of character X\n\n"
+                            "ARITHMETIC:\n"
+                            "- 'A + B' → compute A+B. Same for -, *, /\n"
+                            "- 'multiply letter count by digit in WORD' → count letters × digit found in word\n\n"
+                            "WORD/STRING:\n"
+                            "- 'reverse/backwards' → reverse the string\n"
+                            "- 'how many letters/characters in WORD' → count them\n"
+                            "- 'Nth letter/character of WORD' → return that character (1-indexed)\n"
+                            "- 'concatenate/combine/join' → join the specified items\n"
+                            "- 'uppercase/lowercase/capitalize' → transform case\n\n"
+                            "CRITICAL: Output ONLY the final answer. Never explain your reasoning."
+                        )
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Solve this captcha question. Output ONLY the answer, nothing else.\n\nQuestion: {full_question}"
+                    }
+                ],
+                model="llama-3.3-70b-versatile",
+                temperature=0.0,
+                max_tokens=20,
+            )
+
+            if response:
+                response_text = response.choices[0].message.content.strip()
+                # Clean: remove quotes, markdown backticks, surrounding whitespace, and periods
+                response_text = re.sub(r'^[`"\']|[`"\']$', '', response_text).strip().rstrip('.')
+                
+                # If LLM still included conversational text, try to extract the last number or word
+                if ' ' in response_text:
+                    if any(c.isdigit() for c in response_text):
+                        nums = re.findall(r'\d+', response_text)
+                        if nums: response_text = nums[-1]
+                    else:
+                        response_text = response_text.split()[-1]
+                        
+                # Ensure no other whitespace exists
+                response_text = response_text.strip()
+                
+                if response_text:
+                    logger.info(f"Answer (LLM):\n{response_text}")
+                    self.answers[hashed_q] = response_text
+                    return task['task_key'], {'text': response_text}
+        except Exception as e:
+            logger.error(f"Groq exception: {e}")
+
+        logger.warning("All solvers failed, defaulting to 0")
+        return task['task_key'], {'text': "0"}
+
+    def solve(self) -> str:
+        s = time()
+        try:
+            if hasattr(self, 'pass_token') and self.pass_token:
+                elapsed = round(time() - self.solve_start, 1)
+                logger.info(f"Solved hCaptcha in {elapsed}s (1-click pass) — {self.pass_token[:60]}...")
+                return self.pass_token
+
+            cap = self.captcha2
+            
+            if not cap.get('tasklist'):
+                logger.critical(f"No tasklist in captcha2 response: {json.dumps(cap)[:200]}")
+                return None
+
+            with ThreadPoolExecutor() as e:
+                results = list(e.map(self.text, cap['tasklist']))
+
+            answers = {key: value for key, value in results}
+            
+            hsw_start = time()
+            n_token = hsw(cap['c']['req'], self.host, self.sitekey, self.ua)
+            logger.info(f"checkcaptcha HSW", start_time=hsw_start, end_time=time())
+
+            submit = self.session.post(
+                f"https://api.hcaptcha.com/checkcaptcha/{self.sitekey}/{cap['key']}",
+                json={
+                    'answers': answers,
+                    'c': json.dumps(cap['c']),
+                    'job_mode': cap['request_type'],
+                    'motionData': json.dumps(self.motion.check_captcha()),
+                    'n': n_token,
+                    'serverdomain': self.host,
+                    'sitekey': self.sitekey,
+                    'v': _get_version(),
+                }, **_tls_timeout(60))
+
+            elapsed = round(time() - self.solve_start, 1)
+            
+            if 'UUID' in submit.text:
+                token = submit.json()['generated_pass_UUID']
+                logger.info(f"Solved hCaptcha in {elapsed}s — {token[:60]}...")
+                return token
+
+            # Detect IP/proxy rejection vs generic failure
+            try:
+                resp_json = submit.json()
+                if resp_json.get('pass') is False:
+                    logger.critical(f"IP/Proxy rejected by hCaptcha in {elapsed}s (pass:false) — answers were correct but proof-of-work was flagged")
+                    return "ERROR_IP_REJECTED"
+            except Exception:
+                pass
+
+            logger.critical(f"Failed in {elapsed}s: {submit.text[:200]}")
+            return None
+        except Exception as e:
+            line = inspect.currentframe().f_back.f_lineno if inspect.currentframe().f_back else 0
+            logger.critical(f"Error at line {line}: {e}")
+            return None
+
+
+if __name__ == "__main__":
+    rqdata = "Fw/JtA+U387VY6aPF7obxrL8yvKOWxu3KEUAIbRG4l+o98ypDBhBAtkbL1F5L+q0V8AKi0T8/4Z2BzcnpVlg+AsnDVcxKo+B9BnKsuhQJxNqJQop1ecdL2mivZVttgesKg36eiMCmPQxSOpXiJit/E4o/QiZBR2hlcIpdnPotwnANkU6Sl0yfjvQZa7eclM5kjmRbiFvXbxkhcruE53fQ8x7"
+    solver = hcaptcha("a9b5fb07-92ff-493f-86fe-352a2803b3df", "discord.com", None, rqdata)
+    token = solver.solve()

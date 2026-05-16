@@ -73,6 +73,7 @@ try:
         # ── Poll for result ──
         print(f"\n  Polling for result (max 120s)...")
         poll_start = time.time()
+        test_proxy = None
         last_status = None
         
         while time.time() - poll_start < 120:

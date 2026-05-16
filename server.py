@@ -620,6 +620,12 @@ class Solver:
                         
                         if result == 'RATE_LIMIT':
                             result = None # Exhausted all keys
+                elif engine_type == 'req_v3':
+                    print(f"[SOLVER] Creating Req V3 (CFFI) hcaptcha instance...", flush=True)
+                    from req_solver_v3 import hcaptcha as hcaptcha_v3
+                    captcha = hcaptcha_v3(sitekey, siteurl, proxy, rqdata, useragent)
+                    print(f"[SOLVER] Req V3 hcaptcha instance created, calling solve()...", flush=True)
+                    result = captcha.solve()
                 else:
                     print(f"[SOLVER] Creating native hcaptcha instance...", flush=True)
                     captcha = hcaptcha(sitekey, siteurl, proxy, rqdata, useragent)
