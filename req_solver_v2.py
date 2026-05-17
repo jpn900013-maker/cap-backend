@@ -33,6 +33,10 @@ def solve_cloud_v2(sitekey, url, rqdata, proxy=None, useragent=None):
         }
     }
     
+    if rqdata:
+        payload["data"]["rqdata"] = rqdata
+        print(f"[*] Attaching RQDATA to V2 Payload ({len(rqdata)} bytes)")
+        
     if proxy:
         # Standardize proxy format to what Nopecha accepts
         clean = proxy
