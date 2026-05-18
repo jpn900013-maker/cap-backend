@@ -3,6 +3,11 @@ from flask_cors import CORS
 import jwt as pyjwt
 import os
 import re
+from dotenv import load_dotenv
+
+# Load environment variables FIRST before custom imports
+load_dotenv('config.env')
+
 import psutil
 import bcrypt
 import requests
@@ -20,7 +25,6 @@ from bson.objectid import ObjectId
 import math
 from datetime import datetime
 import logging
-from dotenv import load_dotenv
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 import bleach
@@ -33,9 +37,6 @@ from encryption import encrypt_field, decrypt_field, encrypt_dict_fields, decryp
 
 ADMIN_WEBHOOK_URL = os.environ.get('ADMIN_WEBHOOK_URL', '')
 BAN_WEBHOOK_URL = os.environ.get('BAN_WEBHOOK_URL', '')
-
-# Load environment variables
-load_dotenv('config.env')
 
 SERVER_START_TIME = time.time()
 
