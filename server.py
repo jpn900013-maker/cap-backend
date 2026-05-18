@@ -1135,8 +1135,10 @@ def _get_solver_key():
 @csrf.exempt
 @limiter.exempt
 def ext_recognition(captcha_type):
-    """Proxy captcha recognition requests — swaps user's key with the real solver key."""
+    # NoPECHA extensions often send key as 'Authorization: Basic <key>' or Bearer, or in JSON
     user_key = request.args.get('key') or (request.get_json(force=True, silent=True) or {}).get('key')
+    if not user_key and request.headers.get('Authorization'):
+        user_key = request.headers.get('Authorization').split()[-1]
     is_valid, msg = validate_api_key(user_key or '')
     if not is_valid:
         return jsonify({'error': 1, 'message': 'Invalid 9Captcha API Key'}), 401
@@ -1201,7 +1203,9 @@ def ext_recognition(captcha_type):
 @limiter.exempt
 def ext_recognition_poll(captcha_type):
     """Proxy captcha result polling — swaps key."""
-    user_key = request.args.get('key', '')
+    user_key = request.args.get('key') or ''
+    if not user_key and request.headers.get('Authorization'):
+        user_key = request.headers.get('Authorization').split()[-1]
     is_valid, msg = validate_api_key(user_key or '')
     if not is_valid:
         return jsonify({'error': 1, 'message': 'Invalid 9Captcha API Key'}), 401
