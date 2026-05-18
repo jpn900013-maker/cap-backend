@@ -1408,6 +1408,37 @@ def admin_manage_balance():
     
     return jsonify({'status': 'success', 'message': f'Balance for {user["username"]} updated'})
 
+@app.route('/captcha/api/admin/users/<user_id>/ban', methods=['POST'])
+@admin_required
+@csrf.exempt
+def admin_manage_ban(user_id):
+    db = get_db()
+    data = request.json
+    action = data.get('action', 'ban') # 'ban' or 'unban'
+    reason = bleach.clean(data.get('reason', 'Manual Admin Ban'))
+    
+    user = db.users.find_one({'_id': safe_object_id(user_id)})
+    if not user:
+        return jsonify({'status': 'error', 'message': 'User not found'}), 404
+        
+    if action == 'ban':
+        ban_id = str(uuid.uuid4())[:8]
+        db.users.update_one({'_id': user['_id']}, {'$set': {'is_banned': True, 'ban_reason': reason, 'ban_id': ban_id}})
+        raw_ip = decrypt_field(user.get('registration_ip', ''))
+        if raw_ip:
+            db.blacklisted_ips.update_one({'ip': raw_ip}, {'$set': {'ip': raw_ip, 'active': True, 'reason': reason, 'ban_id': ban_id}}, upsert=True)
+        try:
+            send_ban_alert(BAN_WEBHOOK_URL, ban_id, user['username'], f"Admin Manual Ban: {reason}", raw_ip, user.get('registration_country', 'XX'), "/admin")
+        except Exception:
+            pass
+        return jsonify({'status': 'success', 'message': f'User {user["username"]} has been banned.'})
+    else:
+        db.users.update_one({'_id': user['_id']}, {'$set': {'is_banned': False, 'ban_reason': None, 'ban_id': None}})
+        raw_ip = decrypt_field(user.get('registration_ip', ''))
+        if raw_ip:
+            db.blacklisted_ips.delete_one({'ip': raw_ip})
+        return jsonify({'status': 'success', 'message': f'User {user["username"]} has been UNBANNED.'})
+
 @app.route('/captcha/api/admin/settings', methods=['GET', 'POST'])
 @admin_required
 @csrf.exempt
