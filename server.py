@@ -1498,16 +1498,18 @@ def get_usage():
     user = db.users.find_one({'_id': safe_object_id(request.jwt_user_id)})
     if not user: return jsonify({'status': 'error'}), 404
     
+    raw_key = decrypt_field(user['api_key'])
+    
     daily_count = db.tasks.count_documents({
-        'api_key': user['api_key'],
+        'api_key': raw_key,
         'created_at': {'$gt': time.time() - 86400}
     })
     
     total_solves = db.tasks.count_documents({
-        'api_key': user['api_key'], 
+        'api_key': raw_key, 
         'status': 'solved'
     })
-    total_tasks = db.tasks.count_documents({'api_key': user['api_key']})
+    total_tasks = db.tasks.count_documents({'api_key': raw_key})
     success_rate = (total_solves / total_tasks * 100) if total_tasks > 0 else 0
     
     return jsonify({
@@ -1525,12 +1527,14 @@ def get_task_history():
     user = db.users.find_one({'_id': safe_object_id(request.jwt_user_id)})
     if not user: return jsonify({'status': 'error'}), 404
     
+    raw_key = decrypt_field(user['api_key'])
+    
     page = max(1, int(data.get('page', 1)))
     status_filter = data.get('status', 'all')
     limit = 10
     skip = (page - 1) * limit
     
-    query = {'api_key': user['api_key']}
+    query = {'api_key': raw_key}
     # Prevent "All Status" sent by UI from breaking the entire mongo filter
     if status_filter and status_filter.lower() not in ['all', 'all status']:
         query['status'] = status_filter.lower()
