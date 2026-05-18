@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify, g
 from flask_cors import CORS
 import jwt as pyjwt
 import os
+import re
 import psutil
 import bcrypt
 import requests
@@ -23,6 +24,15 @@ from dotenv import load_dotenv
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 import bleach
+from security_scanner import (
+    scan_payload, get_client_ip, get_ip_country,
+    log_security_event, send_admin_alert, send_ban_alert,
+    sanitize_mongo_input, validate_base64_image
+)
+from encryption import encrypt_field, decrypt_field, encrypt_dict_fields, decrypt_dict_fields
+
+ADMIN_WEBHOOK_URL = os.environ.get('ADMIN_WEBHOOK_URL', '')
+BAN_WEBHOOK_URL = os.environ.get('BAN_WEBHOOK_URL', '')
 
 # Load environment variables
 load_dotenv('config.env')
@@ -74,12 +84,19 @@ solver_logger.addHandler(memory_handler)
 
 app = Flask(__name__)
 
-# Enable CORS for frontend to communicate with backend
-CORS(app, resources={r'/*': {'origins': '*'}}, supports_credentials=True)
+# CORS locked to frontend domain only
+ALLOWED_ORIGINS = [
+    'https://9captcha.pridesmp.fun',
+    'http://localhost:3000',
+    'http://localhost:5000',
+    'http://127.0.0.1:3000',
+]
+CORS(app, resources={r'/*': {'origins': ALLOWED_ORIGINS}}, supports_credentials=True)
 
 # JWT secret for token-based auth
 JWT_SECRET = os.environ.get('JWT_SECRET', secrets.token_hex(32))
-JWT_EXPIRY = 86400 * 7  # 7 days
+JWT_EXPIRY_USER = 86400      # 24 hours for regular users
+JWT_EXPIRY_ADMIN = 7200      # 2 hours for admins
 
 # Production security configuration
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
@@ -185,6 +202,13 @@ def init_db():
         db.payments.create_index('payment_id')
         db.tickets.create_index([('user_id', 1), ('updated_at', -1)])
         db.balance.create_index('user_id')
+        # Security indexes
+        db.security_logs.create_index([('timestamp', -1)])
+        db.security_logs.create_index('attacker_ip')
+        db.security_logs.create_index('type')
+        db.blacklisted_ips.create_index('ip', unique=True)
+        db.users.create_index('is_banned')
+        db.users.create_index('registration_ip')
         # Ensure default settings
         if db.settings.count_documents({}) == 0:
             db.settings.insert_many([
@@ -263,13 +287,119 @@ def admin_required(f):
     return decorated
 
 def create_jwt(user):
+    is_admin = int(user.get('is_admin', 0))
+    expiry = JWT_EXPIRY_ADMIN if is_admin else JWT_EXPIRY_USER
     payload = {
         'user_id': str(user['_id']),
         'username': user['username'],
-        'is_admin': int(user.get('is_admin', 0)),
-        'exp': time.time() + JWT_EXPIRY
+        'is_admin': is_admin,
+        'exp': time.time() + expiry
     }
     return pyjwt.encode(payload, JWT_SECRET, algorithm='HS256')
+
+# ========== SECURITY MIDDLEWARE ==========
+
+# In-memory failed login tracker: {ip: [(timestamp, ...)]}
+_failed_logins = {}
+_FAILED_LOGIN_WINDOW = 600   # 10 minutes
+_FAILED_LOGIN_MAX = 5
+
+@app.before_request
+def security_middleware():
+    """IP blacklist check + attack scanner on every request."""
+    # --- IP Blacklist ---
+    ip = get_client_ip(request)
+    try:
+        db = get_db()
+        blocked = db.blacklisted_ips.find_one({'ip': ip, 'active': True})
+        if blocked:
+            db.security_logs.insert_one({
+                'type': 'BLACKLISTED_ACCESS', 'severity': 'HIGH',
+                'attacker_ip': ip, 'endpoint': request.path,
+                'method': request.method, 'timestamp': time.time(),
+            })
+            from flask import abort
+            abort(403)
+    except Exception:
+        pass  # Don't block requests if DB is down
+
+    # --- Brute-force auto-blacklist ---
+    now = time.time()
+    if ip in _failed_logins:
+        _failed_logins[ip] = [t for t in _failed_logins[ip] if now - t < _FAILED_LOGIN_WINDOW]
+        if len(_failed_logins[ip]) >= _FAILED_LOGIN_MAX:
+            try:
+                db = get_db()
+                ban_id = str(uuid.uuid4())[:8]
+                db.blacklisted_ips.update_one(
+                    {'ip': ip}, {'$set': {'ip': ip, 'active': True, 'reason': 'Brute-force (5+ failed logins)', 'created_at': now, 'ban_id': ban_id}}, upsert=True
+                )
+                log_security_event(db, 'BRUTEFORCE', 'CRITICAL', request, raw_payload=f'{len(_failed_logins[ip])} failed logins', action='BLOCKED')
+                send_ban_alert(BAN_WEBHOOK_URL, ban_id, "Unknown", "Brute-force login limit reached.", ip, "Unknown", request.path)
+                del _failed_logins[ip]
+            except Exception:
+                pass
+            from flask import abort
+            abort(403)
+
+    # --- Attack Scanner (POST/PUT only, skip solver endpoints) ---
+    if request.method in ('POST', 'PUT') and request.is_json:
+        skip_paths = ('/captcha/api/create_task', '/captcha/api/get_result')
+        if not any(request.path.startswith(p) for p in skip_paths):
+            data = request.get_json(silent=True)
+            if data:
+                is_clean, threat_type, patterns = scan_payload(data)
+                if not is_clean:
+                    try:
+                        db = get_db()
+                        user_id = getattr(request, 'jwt_user_id', None)
+                        username = getattr(request, 'jwt_username', None)
+                        ban_id = str(uuid.uuid4())[:8]
+                        db.blacklisted_ips.update_one(
+                            {'ip': ip}, {'$set': {'ip': ip, 'active': True, 'reason': f'Malicious payload ({threat_type})', 'created_at': time.time(), 'ban_id': ban_id}}, upsert=True
+                        )
+                        log_security_event(
+                            db, threat_type, 'CRITICAL', request,
+                            user_id=user_id, username=username,
+                            raw_payload=str(data)[:5000],
+                            detected_patterns=patterns, action='BANNED'
+                        )
+                        # Auto-ban user if authenticated
+                        if user_id:
+                            uid = safe_object_id(user_id)
+                            db.users.update_one({'_id': uid}, {'$set': {'is_banned': True, 'ban_reason': f'Attack detected: {threat_type}', 'banned_at': time.time(), 'ban_id': ban_id}})
+                        
+                        send_ban_alert(BAN_WEBHOOK_URL, ban_id, username or "Anonymous", f"Malicious payload ({threat_type})", ip, "Unknown", request.path, payload=str(patterns))
+                    except Exception as e:
+                        log.error(f'Scanner enforcement error: {e}')
+                    from flask import abort
+                    abort(403)
+
+@app.after_request
+def add_security_headers(response):
+    """Inject production security headers on every response."""
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    response.headers['Permissions-Policy'] = 'camera=(), microphone=(), geolocation=()'
+    if is_production:
+        response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains; preload'
+    csp = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://accounts.google.com https://apis.google.com; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data: https:; "
+        "connect-src 'self'; "
+        "frame-src https://accounts.google.com; "
+        "object-src 'none'; "
+        "base-uri 'self';"
+    )
+    response.headers['Content-Security-Policy'] = csp
+    # Hide server identity
+    response.headers.pop('Server', None)
+    return response
 
 # ========== API ENDPOINTS ==========
 
@@ -362,18 +492,45 @@ def api_change_password():
 
 @app.route('/captcha/api/login', methods=['POST'])
 @csrf.exempt
-@limiter.limit("20 per minute")
+@limiter.limit("10 per 10 minutes")
 def api_login():
     db = get_db()
     data = request.json
     if not data: return jsonify({'status': 'error', 'message': 'JSON body required'})
     username = bleach.clean(data.get('username', ''))
     password = data.get('password', '')
+    ip = get_client_ip(request)
+    ua = request.headers.get('User-Agent', '')[:500]
     if not username or not password: return jsonify({'status': 'error', 'message': 'Credentials required'})
     user = db.users.find_one({'username': username})
-    if not user or not bcrypt.checkpw(password.encode('utf-8'), user['password'].encode('utf-8')):
-        return jsonify({'status': 'error', 'message': 'Invalid credentials'})
-    db.users.update_one({'_id': user['_id']}, {'$set': {'last_login': time.time()}})
+    login_ok = user and user.get('password') and bcrypt.checkpw(password.encode('utf-8'), user['password'].encode('utf-8'))
+    # Check ban status
+    if user and user.get('is_banned'):
+        return jsonify({'status': 'error', 'message': 'Account suspended'}), 403
+    if not login_ok:
+        # Track failed login
+        _failed_logins.setdefault(ip, []).append(time.time())
+        if user:
+            db.users.update_one({'_id': user['_id']}, {'$push': {'login_history': {'ip': ip, 'user_agent': ua, 'success': False, 'timestamp': time.time()}}})
+            recent_fails = sum(1 for h in user['login_history'] if not h['success'] and h['timestamp'] > time.time() - 600)
+            if recent_fails >= 5:
+                ban_id = str(uuid.uuid4())[:8]
+                country = get_ip_country(ip)
+                db.blacklisted_ips.update_one({'ip': ip}, {'$set': {'reason': 'Brute-force login attempt', 'timestamp': time.time(), 'ban_id': ban_id}}, upsert=True)
+                db.users.update_one({'_id': user['_id']}, {'$set': {'is_banned': True, 'ban_reason': 'Too many failed logins', 'ban_id': ban_id}})
+                send_ban_alert(BAN_WEBHOOK_URL, ban_id, user['username'], "Brute-force login limit reached.", ip, country, request.path)
+                return jsonify({'status': 'error', 'message': 'Account temporarily locked. IP blacklisted.'}), 403
+        return jsonify({'status': 'error', 'message': 'Invalid credentials'}), 401
+    # Successful login — log it
+    country = get_ip_country(ip)
+    db.users.update_one({'_id': user['_id']}, {
+        '$set': {'last_login': time.time()},
+        '$push': {'login_history': {'ip': ip, 'user_agent': ua, 'country': country, 'success': True, 'timestamp': time.time()}},
+        '$addToSet': {'ip_history': ip}
+    })
+    # Alert admin on admin login
+    if int(user.get('is_admin', 0)):
+        send_admin_alert(ADMIN_WEBHOOK_URL, 'Admin Login', f'Admin `{username}` logged in', color=0x00FF88, fields=[('IP', ip), ('Country', country)])
     return jsonify({'status': 'success', 'token': create_jwt(user), 'user': {'username': user['username'], 'api_key': user['api_key'], 'is_admin': int(user.get('is_admin', 0))}})
 
 @app.route('/captcha/api/auth/google', methods=['POST'])
@@ -397,6 +554,9 @@ def api_google_login():
     user = db.users.find_one({'$or': [{'google_id': google_id}, {'email': email}]})
     
     is_new_user = False
+    ip = get_client_ip(request)
+    ua = request.headers.get('User-Agent', '')[:500]
+    country = get_ip_country(ip)
     
     if user:
         if 'google_id' not in user: 
@@ -407,7 +567,15 @@ def api_google_login():
         api_key = f"9cap-{uuid.uuid4()}"
         if db.users.find_one({'username': username}): username = f"{username}_{str(uuid.uuid4())[:4]}"
             
-        result = db.users.insert_one({'username': username, 'email': email, 'google_id': google_id, 'password': '', 'api_key': api_key, 'created_at': time.time(), 'last_login': time.time(), 'is_admin': 0})
+        result = db.users.insert_one({
+            'username': username, 'email': encrypt_field(email), 'google_id': google_id,
+            'password': '', 'api_key': api_key,
+            'created_at': time.time(), 'last_login': time.time(), 'is_admin': 0,
+            'registration_ip': encrypt_field(ip), 'registration_country': country,
+            'registration_user_agent': encrypt_field(ua),
+            'login_history': [{'ip': encrypt_field(ip), 'user_agent': ua, 'country': country, 'success': True, 'timestamp': time.time()}],
+            'ip_history': [encrypt_field(ip)], 'is_banned': False,
+        })
         
         # Give $1 Promo correctly with expiration in exactly 24 Hours!
         promo_expires = time.time() + (24 * 3600)
@@ -419,25 +587,38 @@ def api_google_login():
 
 @app.route('/captcha/api/register', methods=['POST'])
 @csrf.exempt
-@limiter.limit("10 per minute")
+@limiter.limit("5 per hour")
 def api_register():
     db = get_db()
     data = request.json
     if not data: return jsonify({'status': 'error', 'message': 'JSON body required'})
     username = bleach.clean(data.get('username', ''))
     password = data.get('password', '')
-    if not username or len(username) < 3:
-        return jsonify({'status': 'error', 'message': 'Username must be at least 3 characters'})
-    if not password or len(password) < 6:
-        return jsonify({'status': 'error', 'message': 'Password must be at least 6 characters'})
+    if not username or len(username) < 3 or len(username) > 30:
+        return jsonify({'status': 'error', 'message': 'Username must be 3-30 characters'})
+    if not re.match(r'^[a-zA-Z0-9_]+$', username):
+        return jsonify({'status': 'error', 'message': 'Username must be alphanumeric'})
+    if not password or len(password) < 8:
+        return jsonify({'status': 'error', 'message': 'Password must be at least 8 characters'})
     if db.users.find_one({'username': username}): return jsonify({'status': 'error', 'message': 'Username taken'})
+    ip = get_client_ip(request)
+    ua = request.headers.get('User-Agent', '')[:500]
+    country = get_ip_country(ip)
     api_key = f"9cap-{uuid.uuid4()}"
-    hashed = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
-    is_admin = 1 if username.lower() == 'admin' else 0
-    result = db.users.insert_one({'username': username, 'password': hashed.decode('utf-8'), 'api_key': api_key, 'created_at': time.time(), 'last_login': time.time(), 'is_admin': is_admin})
+    hashed = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt(12))
+    result = db.users.insert_one({
+        'username': username, 'password': hashed.decode('utf-8'), 'api_key': api_key,
+        'created_at': time.time(), 'last_login': time.time(), 'is_admin': 0,
+        'registration_ip': encrypt_field(ip), 'registration_country': country,
+        'registration_user_agent': encrypt_field(ua),
+        'login_history': [{'ip': encrypt_field(ip), 'user_agent': ua, 'country': country, 'success': True, 'timestamp': time.time()}],
+        'ip_history': [encrypt_field(ip)],
+        'is_banned': False,
+    })
     db.balance.insert_one({'user_id': result.inserted_id, 'amount': 0.0, 'last_updated': time.time()})
     user = db.users.find_one({'_id': result.inserted_id})
-    return jsonify({'status': 'success', 'token': create_jwt(user), 'user': {'username': user['username'], 'api_key': user['api_key'], 'is_admin': is_admin}})
+    send_admin_alert(ADMIN_WEBHOOK_URL, 'New Registration', f'User `{username}` registered', color=0x3B82F6, fields=[('IP', ip), ('Country', country)])
+    return jsonify({'status': 'success', 'token': create_jwt(user), 'user': {'username': user['username'], 'api_key': user['api_key'], 'is_admin': 0}})
 
 @app.route('/captcha/api/session', methods=['GET'])
 @jwt_required
@@ -462,7 +643,18 @@ def api_session():
             balance_doc['promo_amount'] = 0
 
     promo_expires = balance_doc.get('promo_expires', 0) if balance_doc and balance_doc.get('promo_amount', 0) > 0 else 0
-    return jsonify({'status': 'success', 'user': {'username': user['username'], 'api_key': user['api_key'], 'is_admin': int(user.get('is_admin', 0)), 'balance': balance_doc['amount'] if balance_doc else 0.0, 'promo_expires': promo_expires}})
+    email = decrypt_field(user.get('email', '')) if 'email' in user else ''
+    return jsonify({
+        'status': 'success', 
+        'user': {
+            'username': user['username'], 
+            'api_key': user['api_key'], 
+            'email': email,
+            'is_admin': int(user.get('is_admin', 0)), 
+            'balance': balance_doc['amount'] if balance_doc else 0.0, 
+            'promo_expires': promo_expires
+        }
+    })
 
 @app.route('/captcha/api/reset_key', methods=['POST'])
 @jwt_required
@@ -1138,17 +1330,38 @@ def admin_overview():
 @csrf.exempt
 def admin_get_users():
     db = get_db()
-    search = request.args.get('search', '')
-    query = {'username': {'$regex': search, '$options': 'i'}} if search else {}
+    search = request.args.get('search', '').strip()
+    query = {}
+    if search:
+        query = {
+            '$or': [
+                {'username': {'$regex': search, '$options': 'i'}},
+                {'api_key': search},
+                {'ban_id': search}
+            ]
+        }
     users = list(db.users.find(query, {'password': 0}).sort('created_at', -1))
     
     formatted_users = []
+    tdb = get_tickets_db()
     for u in users:
         balance_doc = db.balance.find_one({'user_id': u['_id']})
+        
+        raw_email = decrypt_field(u.get('email', '')) if 'email' in u else ''
+        raw_ip = decrypt_field(u.get('registration_ip', '')) if 'registration_ip' in u else ''
+        ticket_count = tdb.tickets.count_documents({'user_id': u['_id']})
+        
         formatted_users.append({
             'id': str(u['_id']),
             'username': u['username'],
             'api_key': u['api_key'],
+            'email': raw_email,
+            'registration_ip': raw_ip,
+            'registration_country': u.get('registration_country', 'XX'),
+            'is_banned': u.get('is_banned', False),
+            'ban_reason': u.get('ban_reason', ''),
+            'ban_id': u.get('ban_id', ''),
+            'ticket_count': ticket_count,
             'created_at': u.get('created_at', 0),
             'last_login': u.get('last_login', 0),
             'is_admin': int(u.get('is_admin', 0)),
@@ -1359,6 +1572,7 @@ def user_get_tickets():
 @app.route('/captcha/api/tickets/create', methods=['POST'])
 @jwt_required
 @csrf.exempt
+@limiter.limit("3 per hour")
 def user_create_ticket():
     """Create a new support ticket (with optional image attachment)."""
     db = get_db()  # For user lookup
@@ -1369,12 +1583,12 @@ def user_create_ticket():
     image = data.get('image', '')  # base64 image data
     if not subject or not message:
         return jsonify({'status': 'error', 'message': 'Subject and message are required'}), 400
-    if len(subject) > 200:
-        return jsonify({'status': 'error', 'message': 'Subject too long (max 200 chars)'}), 400
+    if len(subject) > 100:
+        return jsonify({'status': 'error', 'message': 'Subject too long (max 100 chars)'}), 400
     if len(message) > 2000:
         return jsonify({'status': 'error', 'message': 'Message too long (max 2000 chars)'}), 400
-    if image and len(image) > 700000:  # ~500KB base64
-        return jsonify({'status': 'error', 'message': 'Image too large (max 500KB)'}), 400
+    if image and not validate_base64_image(image):
+        return jsonify({'status': 'error', 'message': 'Invalid image data'}), 400
 
     user_id = safe_object_id(request.jwt_user_id)
     user = db.users.find_one({'_id': user_id})
@@ -1433,8 +1647,8 @@ def user_reply_ticket(ticket_id):
         return jsonify({'status': 'error', 'message': 'Message or image is required'}), 400
     if message and len(message) > 2000:
         return jsonify({'status': 'error', 'message': 'Message too long (max 2000 chars)'}), 400
-    if image and len(image) > 700000:
-        return jsonify({'status': 'error', 'message': 'Image too large (max 500KB)'}), 400
+    if image and not validate_base64_image(image):
+        return jsonify({'status': 'error', 'message': 'Invalid image data'}), 400
 
     user_id = safe_object_id(request.jwt_user_id)
     ticket = tdb.tickets.find_one({'_id': safe_object_id(ticket_id), 'user_id': user_id})
@@ -1480,11 +1694,10 @@ def user_close_ticket(ticket_id):
 def admin_get_tickets():
     """Get all tickets for admin view, sorted by status (open first) then date."""
     tdb = get_tickets_db()
-    # Auto-close tickets inactive > 7 days
+    # Auto-delete tickets inactive > 7 days
     week_ago = time.time() - (7 * 86400)
-    tdb.tickets.update_many(
-        {'status': {'$nin': ['closed']}, 'updated_at': {'$lt': week_ago}},
-        {'$set': {'status': 'closed', 'updated_at': time.time()}}
+    tdb.tickets.delete_many(
+        {'updated_at': {'$lt': week_ago}}
     )
     tickets = list(tdb.tickets.find().sort([('status', 1), ('updated_at', -1)]))
     formatted = []
@@ -1533,8 +1746,8 @@ def admin_reply_ticket(ticket_id):
     image = data.get('image', '')
     if not message and not image:
         return jsonify({'status': 'error', 'message': 'Message or image is required'}), 400
-    if image and len(image) > 700000:
-        return jsonify({'status': 'error', 'message': 'Image too large (max 500KB)'}), 400
+    if image and not validate_base64_image(image):
+        return jsonify({'status': 'error', 'message': 'Invalid image data'}), 400
 
     ticket = tdb.tickets.find_one({'_id': safe_object_id(ticket_id)})
     if not ticket:
@@ -1568,6 +1781,17 @@ def admin_close_ticket(ticket_id):
         {'$set': {'status': 'closed', 'updated_at': time.time()}}
     )
     log.info(f'[TICKET] Admin closed ticket {ticket_id}')
+    return jsonify({'status': 'success'})
+
+@app.route('/captcha/api/admin/tickets/<ticket_id>/delete', methods=['DELETE'])
+@admin_required
+@csrf.exempt
+def admin_delete_ticket(ticket_id):
+    """Admin permanently deletes a ticket."""
+    tdb = get_tickets_db()
+    res = tdb.tickets.delete_one({'_id': safe_object_id(ticket_id)})
+    if res.deleted_count == 0:
+        return jsonify({'status': 'error', 'message': 'Ticket not found'}), 404
     return jsonify({'status': 'success'})
 
 # ---- Admin Customers Endpoint ----

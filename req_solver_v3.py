@@ -56,16 +56,25 @@ def _get_version():
     return version
 
 import os
+from pathlib import Path
 from dotenv import load_dotenv
-load_dotenv('config.env')
 
-_groq_client = None
+env_path = Path(__file__).parent / 'config.env'
+load_dotenv(env_path)
 
 def _get_groq():
-    global _groq_client
-    if _groq_client is None:
-        _groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-    return _groq_client
+    env_keys = os.environ.get("GROQ_API_KEY", "")
+    pool = []
+    for k in env_keys.split(","):
+        k = k.strip()
+        if k and k not in pool:
+            pool.append(k)
+            
+    if not pool:
+        logger.error("No GROQ_API_KEY configured in config.env!")
+        return None
+
+    return Groq(api_key=random.choice(pool), max_retries=0)
 
 
 def _build_headers(ua: str, chrome_ver: str, platform: str) -> dict:
@@ -393,48 +402,53 @@ class hcaptcha:
             return task['task_key'], {'text': ans}
 
         # ---- LLM fallback ----
-        try:
-            response = _get_groq().chat.completions.create(
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are an expert text-captcha solver. Your output is parsed by a machine — any extra text will cause failure.\n"
-                            "OUTPUT EXACTLY ONE answer: a single number, word, or short string. NO quotes, NO punctuation, NO explanation.\n\n"
-                            "MASTER RULESET — follow the FIRST matching rule:\n\n"
-                            "EXTRACTION:\n"
-                            "- 'Nth group/collection/set/block of digits/numbers in series' → extract the Nth number from the list (1-indexed)\n"
-                            "- 'largest/smallest/biggest/greatest number' → compare ALL numbers and return the max/min\n"
-                            "- 'sum/total of all numbers' → add all numbers together\n"
-                            "- 'how many numbers/digits/groups' → count them\n\n"
-                            "CHARACTER MANIPULATION:\n"
-                            "- 'Replace/change last character with X if/when/only ending is Y in NUMBER'\n"
-                            "  → Check if NUMBER ends with Y. If YES, replace last digit with X. If NO, return NUMBER unchanged.\n"
-                            "- 'Replace/change first character with X in NUMBER' → replace first digit with X\n"
-                            "- 'Delete/remove all occurrences of X in NUMBER' → remove every instance of digit X\n"
-                            "- 'Replace/change/convert/swap X to Y in WORD' → substitute all X→Y in the word\n"
-                            "- 'Remove all occurrences of X from WORD' → delete all instances of character X\n\n"
-                            "ARITHMETIC:\n"
-                            "- 'A + B' → compute A+B. Same for -, *, /\n"
-                            "- 'multiply letter count by digit in WORD' → count letters × digit found in word\n\n"
-                            "WORD/STRING:\n"
-                            "- 'reverse/backwards' → reverse the string\n"
-                            "- 'how many letters/characters in WORD' → count them\n"
-                            "- 'Nth letter/character of WORD' → return that character (1-indexed)\n"
-                            "- 'concatenate/combine/join' → join the specified items\n"
-                            "- 'uppercase/lowercase/capitalize' → transform case\n\n"
-                            "CRITICAL: Output ONLY the final answer. Never explain your reasoning."
-                        )
-                    },
-                    {
-                        "role": "user",
-                        "content": f"Solve this captcha question. Output ONLY the answer, nothing else.\n\nQuestion: {full_question}"
-                    }
-                ],
-                model="llama-3.3-70b-versatile",
-                temperature=0.0,
-                max_tokens=20,
-            )
+        for attempt in range(3):
+            try:
+                response = _get_groq().chat.completions.create(
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are an expert text-captcha solver. Your output is parsed by a machine — any extra text will cause failure.\n"
+                                "OUTPUT EXACTLY ONE answer: a single number, word, or short string. NO quotes, NO punctuation, NO explanation.\n\n"
+                                "MASTER RULESET — follow the FIRST matching rule:\n\n"
+                                "EXTRACTION:\n"
+                                "- 'Nth group/collection/set/block of digits/numbers in series' → extract the Nth number from the list (1-indexed)\n"
+                                "- 'largest/smallest/biggest/greatest number' → compare ALL numbers and return the max/min\n"
+                                "- 'sum/total of all numbers' → add all numbers together\n"
+                                "- 'how many numbers/digits/groups' → count them\n\n"
+                                "CHARACTER MANIPULATION:\n"
+                                "- 'Replace/change last character with X if/when/only ending is Y in NUMBER'\n"
+                                "  → Check if NUMBER ends with Y. If YES, replace last digit with X. If NO, return NUMBER unchanged.\n"
+                                "- 'Replace/change first character with X in NUMBER' → replace first digit with X\n"
+                                "- 'Delete/remove all occurrences of X in NUMBER' → remove every instance of digit X\n"
+                                "- 'Replace/change/convert/swap X to Y in WORD' → substitute all X→Y in the word\n"
+                                "- 'Remove all occurrences of X from WORD' → delete all instances of character X\n\n"
+                                "ARITHMETIC:\n"
+                                "- 'A + B' → compute A+B. Same for -, *, /\n"
+                                "- 'multiply letter count by digit in WORD' → count letters × digit found in word\n\n"
+                                "WORD/STRING:\n"
+                                "- 'reverse/backwards' → reverse the string\n"
+                                "- 'how many letters/characters in WORD' → count them\n"
+                                "- 'Nth letter/character of WORD' → return that character (1-indexed)\n"
+                                "- 'concatenate/combine/join' → join the specified items\n"
+                                "- 'uppercase/lowercase/capitalize' → transform case\n\n"
+                                "CRITICAL: Output ONLY the final answer. Never explain your reasoning."
+                            )
+                        },
+                        {
+                            "role": "user",
+                            "content": f"Solve this captcha question. Output ONLY the answer, nothing else.\n\nQuestion: {full_question}"
+                        }
+                    ],
+                    model="llama-3.3-70b-versatile",
+                    temperature=0.0,
+                    max_tokens=20,
+                )
+                break
+            except Exception as e:
+                logger.error(f"Groq exception (attempt {attempt+1}): {e}")
+                response = None
 
             if response:
                 response_text = response.choices[0].message.content.strip()
@@ -456,8 +470,9 @@ class hcaptcha:
                     logger.info(f"Answer (LLM):\n{response_text}")
                     self.answers[hashed_q] = response_text
                     return task['task_key'], {'text': response_text}
-        except Exception as e:
-            logger.error(f"Groq exception: {e}")
+        if not response:
+            logger.warning("All LLM attempts failed, defaulting to 0")
+            return task['task_key'], {'text': "0"}
 
         logger.warning("All solvers failed, defaulting to 0")
         return task['task_key'], {'text': "0"}
@@ -527,5 +542,8 @@ class hcaptcha:
 
 if __name__ == "__main__":
     rqdata = "Fw/JtA+U387VY6aPF7obxrL8yvKOWxu3KEUAIbRG4l+o98ypDBhBAtkbL1F5L+q0V8AKi0T8/4Z2BzcnpVlg+AsnDVcxKo+B9BnKsuhQJxNqJQop1ecdL2mivZVttgesKg36eiMCmPQxSOpXiJit/E4o/QiZBR2hlcIpdnPotwnANkU6Sl0yfjvQZa7eclM5kjmRbiFvXbxkhcruE53fQ8x7"
-    solver = hcaptcha("a9b5fb07-92ff-493f-86fe-352a2803b3df", "discord.com", None, rqdata)
+    import random
+    session_id = f"__session_{random.randint(100000, 999999)}"
+    test_proxy = f"5c70cfb85350c7c5901d__cr.in{session_id}:cffa6b1a761020aa@gw.dataimpulse.com:10064"
+    solver = hcaptcha("a9b5fb07-92ff-493f-86fe-352a2803b3df", "discord.com", test_proxy, rqdata)
     token = solver.solve()
