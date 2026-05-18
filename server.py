@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 # Load environment variables FIRST before custom imports
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-load_dotenv(os.path.join(_BASE_DIR, 'config.env'))
+load_dotenv(os.path.join(_BASE_DIR, 'config.env'), override=True)
 
 import psutil
 import bcrypt
