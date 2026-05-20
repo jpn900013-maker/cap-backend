@@ -162,7 +162,7 @@ class hcaptcha:
             logger.info(f"[PROXY] Using formatted proxy: {formatted_proxy}")
             self.session.proxies = {"http": formatted_proxy, "https": formatted_proxy}
         else:
-            logger.warning("[PROXY] No proxy provided — solver will use VPS IP!")
+            logger.warning("")
 
         # Motion data with matching UA (uses en-US language internally)
         self.motion = motion_data(ua, f"https://{self.host}")

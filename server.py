@@ -41,6 +41,29 @@ BAN_WEBHOOK_URL = os.environ.get('BAN_WEBHOOK_URL', '')
 
 SERVER_START_TIME = time.time()
 
+# ========== MAINTENANCE MODE ==========
+MAINTENANCE_MODE = False
+MAINTENANCE_REASON = ''
+_maintenance_lock = threading.Lock()
+
+def is_maintenance():
+    return MAINTENANCE_MODE
+
+def _sync_maintenance_from_db():
+    """Load maintenance state from DB on startup."""
+    global MAINTENANCE_MODE, MAINTENANCE_REASON
+    try:
+        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=3000, tlsAllowInvalidCertificates=True)
+        db = client[DB_NAME]
+        doc = db.settings.find_one({'key': 'maintenance_mode'})
+        if doc and doc.get('value') == 'true':
+            MAINTENANCE_MODE = True
+            reason_doc = db.settings.find_one({'key': 'maintenance_reason'})
+            MAINTENANCE_REASON = reason_doc['value'] if reason_doc else ''
+        client.close()
+    except Exception:
+        pass
+
 # Initialize logging
 import collections
 class MemoryLogHandler(logging.Handler):
@@ -248,6 +271,13 @@ try:
 except Exception as e:
     print(f'[STARTUP] WARNING: DB init failed ({e}) - starting in degraded mode', flush=True)
 
+try:
+    _sync_maintenance_from_db()
+    if MAINTENANCE_MODE:
+        print('[STARTUP] ⚠ MAINTENANCE MODE IS ACTIVE', flush=True)
+except Exception:
+    pass
+
 # Utility functions
 def safe_object_id(id_str):
     try: return ObjectId(id_str)
@@ -308,7 +338,38 @@ _FAILED_LOGIN_MAX = 5
 
 @app.before_request
 def security_middleware():
-    """IP blacklist check + attack scanner on every request."""
+    """Maintenance mode gate + IP blacklist check + attack scanner on every request."""
+    # --- Maintenance Mode Gate ---
+    if MAINTENANCE_MODE:
+        path = request.path
+        # Always allow: admin endpoints, login, session, health, logs
+        allowed_prefixes = (
+            '/captcha/api/admin/',
+            '/captcha/api/login',
+            '/captcha/api/session',
+            '/captcha/api/health',
+            '/captcha/api/logs',
+            '/captcha/api/auth/google',
+            '/setup',
+        )
+        if not any(path.startswith(p) for p in allowed_prefixes):
+            # Block solving, registration, payment, and extension endpoints
+            blocked_prefixes = (
+                '/captcha/api/create_task',
+                '/captcha/api/get_result',
+                '/captcha/api/hcaptcha',
+                '/captcha/api/ext/',
+                '/captcha/api/register',
+                '/captcha/api/payments/',
+            )
+            if any(path.startswith(p) for p in blocked_prefixes):
+                return jsonify({
+                    'status': 'error',
+                    'message': 'Service is currently under maintenance. Please try again later.',
+                    'maintenance': True,
+                    'reason': MAINTENANCE_REASON or 'Scheduled maintenance'
+                }), 503
+
     # --- IP Blacklist ---
     ip = get_client_ip(request)
     try:
@@ -463,13 +524,15 @@ def api_health():
         pass
 
     return jsonify({
-        'status': 'success' if db_up else 'error',
+        'status': 'success' if (db_up and not MAINTENANCE_MODE) else ('maintenance' if MAINTENANCE_MODE else 'error'),
+        'maintenance': MAINTENANCE_MODE,
+        'maintenance_reason': MAINTENANCE_REASON if MAINTENANCE_MODE else None,
         'services': {
-            'api': {'up': True, 'status': 'Operational'},
-            'hcaptcha': {'up': True, 'status': 'Operational'},
+            'api': {'up': not MAINTENANCE_MODE, 'status': 'Maintenance' if MAINTENANCE_MODE else 'Operational'},
+            'hcaptcha': {'up': not MAINTENANCE_MODE, 'status': 'Maintenance' if MAINTENANCE_MODE else 'Operational'},
             'db': {'up': db_up, 'status': 'Operational' if db_up else 'Down'}
         }
-    }), (200 if db_up else 503)
+    }), (200 if db_up and not MAINTENANCE_MODE else 503)
 
 @app.route('/captcha/api/change_password', methods=['POST'])
 @jwt_required
@@ -1465,6 +1528,10 @@ def admin_manage_settings():
     solver_key_doc = db.admin_settings.find_one({'key': 'solver_api_key'})
     settings['solver_api_key'] = solver_key_doc['value'] if solver_key_doc else 't7tz6we5y31rxaeq'
     
+    # Include live maintenance status
+    settings['maintenance_mode'] = 'true' if MAINTENANCE_MODE else 'false'
+    settings['maintenance_reason'] = MAINTENANCE_REASON or ''
+    
     return jsonify({'status': 'success', 'settings': settings})
 
 @app.route('/captcha/api/admin/test_solver', methods=['POST'])
@@ -1492,6 +1559,41 @@ def admin_test_solver():
             return jsonify({'status': 'error', 'message': f'Engine rejected key (HTTP {resp.status_code})'})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
+# ========== MAINTENANCE MODE TOGGLE ==========
+
+@app.route('/captcha/api/admin/maintenance', methods=['POST'])
+@admin_required
+@csrf.exempt
+def admin_toggle_maintenance():
+    global MAINTENANCE_MODE, MAINTENANCE_REASON
+    db = get_db()
+    data = request.json or {}
+    enabled = data.get('enabled', not MAINTENANCE_MODE)
+    reason = bleach.clean(data.get('reason', '')) if data.get('reason') else ''
+    
+    with _maintenance_lock:
+        MAINTENANCE_MODE = bool(enabled)
+        MAINTENANCE_REASON = reason
+    
+    db.settings.update_one({'key': 'maintenance_mode'}, {'$set': {'value': 'true' if enabled else 'false', 'updated_at': time.time()}}, upsert=True)
+    db.settings.update_one({'key': 'maintenance_reason'}, {'$set': {'value': reason, 'updated_at': time.time()}}, upsert=True)
+    
+    status_str = 'ENABLED' if enabled else 'DISABLED'
+    log.warning(f'[MAINTENANCE] Mode {status_str} by admin {request.jwt_username}' + (f' — Reason: {reason}' if reason else ''))
+    send_admin_alert(ADMIN_WEBHOOK_URL, f'Maintenance {status_str}', f'Admin `{request.jwt_username}` {status_str.lower()} maintenance mode.' + (f'\nReason: {reason}' if reason else ''), color=0xF59E0B if enabled else 0x10B981)
+    
+    return jsonify({'status': 'success', 'maintenance': MAINTENANCE_MODE, 'message': f'Maintenance mode {status_str.lower()}.'})
+
+@app.route('/captcha/api/maintenance/status', methods=['GET'])
+@csrf.exempt
+@limiter.exempt
+def public_maintenance_status():
+    """Public endpoint for frontend maintenance page to check if maintenance is still active."""
+    return jsonify({
+        'maintenance': MAINTENANCE_MODE,
+        'reason': MAINTENANCE_REASON if MAINTENANCE_MODE else None
+    })
 
 # ========== DASHBOARD HELPER APIS ==========
 
